@@ -97,9 +97,10 @@ def dup_args(args, filepath,wotif=None):
 def RAPID(config_file=None):
     with Timer('RAPID total time'):
         # Get the path of the current code folder
-        current_dir = os.path.dirname(__file__)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        os.chdir(script_dir)
         if config_file is None:
-            config_file = os.path.join(current_dir, 'config.json')
+            config_file = os.path.join(script_dir, 'config.json')
         if not os.path.exists(config_file):
             raise ValueError(f"{config_file} does not exist!")
         

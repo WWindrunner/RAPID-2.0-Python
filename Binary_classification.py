@@ -531,6 +531,12 @@ def thSeg4(args,ds):
     args.fileOutLow=os.path.join(args.dirOut,'waterMask_lowProb.tif')
     args.bcoutname = ['High_mask', 'Mod_mask','Low_mask']
     args.C, args.rho_c2, args.ThPD = args.oC, args.oRho_c2, args.oThPD
+    if isinstance(args.C, da.Array):
+        args.C = args.C.compute()
+    if isinstance(args.rho_c2, da.Array):
+        args.rho_c2 = args.rho_c2.compute()
+    if isinstance(args.ThPD, da.Array):
+        args.ThPD = args.ThPD.compute()
     dual_pol, hhgrid, hvgrid, deltaHH, deltaHV = getgrids(args)
     if dual_pol:
         args.ThPDL=args.ThPD/da.array([30,300])
