@@ -1,0 +1,157 @@
+import json
+import os
+import argparse
+import random
+import datetime
+import rasterio
+from utils import *
+from Load_Data import *
+from Binary_classification import *
+from Morpho_process import *
+from Compensation import *
+from NDFI import *
+# Suppress all warnings
+import warnings
+warnings.filterwarnings("ignore")
+
+def mosaic_pre(output):
+    if len(output)==1 and output[0][0].MODE == 'normal':
+        output[0][0].floodimage = False
+        print('No dry images, mosaic quit')
+    elif len(output)==1 and output[0][0].MODE == 'single':
+        output[0][1].pre_mod_mask = da.where(output[0][1].water_occurrence>50,1,0)
+        print('Single flood image mode, build pre-event water with ESA water occurrence >50')
+    else:
+        flood_src = output[0][0].ref_src
+        dry_srcs = [out[0].ref_src for out in output[1:]]
+        mod_masks = [out[1].Mod_mask for out in output[1:]]
+        mosaic_results = []
+        for dry_ras,dry_src in zip(mod_masks,dry_srcs):
+            dry_src_meta = dry_src.meta.copy()
+            dry_src_meta.update(dtype=rasterio.uint8, nodata=255)
+            mosaic_results.append(dask.delayed(reproject_clip_direct)(dry_ras,dry_src_meta,flood_src.meta.copy()))
+        mosaic_results = dask.compute(*mosaic_results)
+        mesaic_raw = da.sum(da.stack(mosaic_results, axis=0),axis=0).squeeze()
+        output[0][1].pre_mod_mask = da.where(mesaic_raw>0,1,0)
+        del mosaic_results,mesaic_raw
+    return output
+
+def parse(config_json):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--showDist', default=False)
+    parser.add_argument('--Iter', default=False)
+    parser.add_argument('--granules', default=[])
+    parser.add_argument('--thProb', type=float, default=0.87)
+    parser.add_argument('--thProbMax', type=float, default=0.89)
+    parser.add_argument('--thProbMin', type=float, default=0.87)
+    parser.add_argument('--dThProb', type=float, default=0.01)
+    parser.add_argument('--thSeed', type=float, default=75)
+    parser.add_argument('--NSCE_th', type=float, default=0.2)
+    parser.add_argument('--PDFScaling', type=float, default=1)
+    parser.add_argument('--th_grid_ratio', type=float, default=0.3)
+    parser.add_argument('--ENL', type=float, default=4.9)
+    parser.add_argument('--blockSize', default='auto')
+    parser.add_argument('--nInter', type=int, default=100)
+    parser.add_argument('--morpho_seed_type', type=str, default='both')
+    parser.add_argument('--nWBClasses', default=[8,80])
+    parser.add_argument('--WBClasses', default=[5,6,50,60])
+    parser.add_argument('--thSensPre', type=float, default=0.3)
+    parser.add_argument('--thSensIn', type=float, default=0.01)
+    parser.add_argument('--rNWB_WST_Org', type=float, default=0.3)
+    parser.add_argument('--rNWB_WST', type=float, default=0.4)
+    parser.add_argument('--rNWB_ICD', type=float, default=0.8)
+    parser.add_argument('--thSize', type=int, default=50)
+    parser.add_argument('--thInund', type=float, default=0.3)
+    parser.add_argument('--rInund', type=float, default=1)
+    parser.add_argument('--rProb', type=float, default=0.5)
+    parser.add_argument('--imported', default=False)
+    parser.add_argument('--optIterAlg', default=True)
+    parser.add_argument('--log_file_err', type=str, default='')
+    parser.add_argument('--showProgress', default=False)
+    parser.add_argument('--bInitialized', default=False)
+    parser.add_argument('--bExport', default=True)
+    parser.add_argument('--floodimage', default=False)
+    parser.add_argument('--failed', default=False)
+    args, unparsed = parser.parse_known_args()
+    with open(config_json, 'r') as f:
+        loaded_args = json.load(f)
+    for arg in loaded_args:
+        setattr(args, arg, loaded_args[arg])
+    return args
+
+def dup_args(args, filepath,wotif=None):
+    args_new = argparse.Namespace(**vars(args))
+    args_new.filepath = filepath
+    args_new.wotif = wotif
+    args_new.dirOut = os.path.join(args_new.WORK_PATH, os.path.splitext(max(filepath[0].split('/'), key=len))[0])
+                                #os.path.splitext(os.path.split(filepath[0])[1])[0])
+    args_new.fileSampleMap=os.path.join(args_new.dirOut,'SampleMap.tif') #intermedian result, not used for now
+    args_new.logFile=os.path.join(args_new.dirOut,'sta_log.csv')
+    os.makedirs(args_new.dirOut, exist_ok = True)
+    if args.blockSize == 'auto':
+        args_new.chunks = 'auto'
+    else: 
+        args_new.chunks = args.blockSize
+    return args_new
+
+def RAPID(config_file=None):
+    with Timer('RAPID total time'):
+        # Get the path of the current code folder
+        current_dir = os.path.dirname(__file__)
+        if config_file is None:
+            config_file = os.path.join(current_dir, 'config.json')
+        if not os.path.exists(config_file):
+            raise ValueError(f"{config_file} does not exist!")
+        
+        #get input file
+        args = parse(config_file)
+
+        #Define ouput path
+        now = datetime.datetime.now()
+        now_str = now.strftime('%Y-%m-%d_%H-%M-%S')
+        rand_num = random.randint(1, 1000000)
+        args.WORK_PATH = os.path.join(args.OUT_PATH, f'{now_str}_{rand_num}')
+        os.makedirs(args.WORK_PATH, exist_ok=True)
+        filepath_list = args.filepath_list
+        for arg in vars(args):
+            print(f"{arg}: {getattr(args, arg)}")
+
+        #Initial args list for each image
+        args_list = []
+        for idx,filepath in enumerate(filepath_list):
+            args1 = dup_args(args, filepath, wotif=None)
+            if len(filepath_list) == len(args.granules):
+                args1.granules = args.granules[idx]
+            else:
+                args1.granules = filepath_list
+            args_list.append(args1)
+        
+        # set flood image
+        args_list[0].floodimage = True
+
+        # load image and get ancillary data
+        with Timer('Load_Data Total'):
+            output = dask.compute(*[dask.delayed(Load_Data)(arggs) for arggs in args_list])
+            #output = [[args_list[i], ds_dask[i]] for i in range(len(args_list))]
+        if args_list[0].MODE != 'desert':
+            #Normal mode
+            with Timer('TOTAL BC TIME'):
+                output = dask.compute(*[dask.delayed(Binary_classification)(*single_out) for single_out in output])
+                    
+            with Timer('Mosaic_pre TIME'):
+                output = mosaic_pre(output)
+            with Timer('Morph_proc'):
+                output = dask.compute(*[dask.delayed(Morph_proc)(*single_out) for single_out in output])
+            with Timer('Compensation'):
+                output = dask.compute(*[dask.delayed(Compensate)(*single_out) for single_out in output])
+            #with Timer('Morph_proc + Compensation only flood image'):
+            #    morpho = dask.compute(dask.delayed(Morph_proc)(*output[0]))
+            #    _ = dask.compute(dask.delayed(Compensate)(*morpho[0]))
+        else:
+            print('Running desert mode!')
+            args_ndfi, ds_ndfi = NDFI(output)
+            args_ndfi, ds_ndfi = NDFI_morph(args_ndfi, ds_ndfi)
+            args_ndfi, ds_ndfi = NDFI_compensate(args_ndfi, ds_ndfi)
+
+if __name__ == '__main__':
+    RAPID(*sys.argv[1:])

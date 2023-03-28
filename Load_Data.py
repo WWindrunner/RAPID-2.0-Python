@@ -1,0 +1,191 @@
+import os
+import numpy as np
+from utils import *
+from AncillaryData import *
+import tempfile
+import dask
+import dask.array as da
+import rasterio
+import h5py
+import zipfile
+from io import BytesIO
+import requests
+
+
+def tosigmma(arr):
+    return np.power(10,(2*np.log10(arr)-8.3))
+
+def readfileio(file,chunks=(1, 512,512)):
+    # Open the GeoTIFF file using rasterio
+    with rasterio.open(file) as src:
+        # Read the image in chunks using dask.array
+        img = da.from_array(src.read(1), chunks=chunks)
+    return (img)
+
+def readhdf(file,chunks=(1, 512,512)):
+    f = h5py.File(file)
+    print("Keys: %s" % f.keys())
+    a_group_key = list(f.keys())[0]
+    d = f[a_group_key]
+    x = da.from_array(d, chunks=chunks)
+    return x
+
+def ZipreadMemorTemp(src,args):
+    if args.datamode == 'mem':
+        temp_lp = da.from_array(src.read(1), chunks = args.chunks)
+    else:
+        kwargs = src.meta.copy()
+        temp_lp = tempfile.NamedTemporaryFile()
+        print(temp_lp.name)
+        print('open temp_lp.name')
+        with rasterio.open(temp_lp.name, 'w', **kwargs) as dst:
+            dst.write(src.read(1))
+    return temp_lp
+
+def VV_VHread(zip_file,file_name,args,ds,newfilepath,VHindex):
+    with zip_file.open(file_name) as tiff_file:
+        with rasterio.open(BytesIO(tiff_file.read())) as src:
+            temp_lp = ZipreadMemorTemp(src,args)
+            args.ref_src = src
+            print(temp_lp)
+            if args.datamode == 'tem':
+                args.tempfiles.append(temp_lp)
+                newfilepath[VHindex] = temp_lp.name
+            else:
+                newfilepath[VHindex] = src
+                setattr(ds, args.varnames[VHindex], temp_lp)
+    return args, ds, newfilepath
+
+def inc_read(zip_file,file_name,args,ds):
+    with zip_file.open(file_name) as tiff_file:
+        with rasterio.open(BytesIO(tiff_file.read())) as src:
+            temp_lp = ZipreadMemorTemp(src,args)
+            print(temp_lp)
+            if args.datamode == 'tem':
+                args.tempfiles.append(temp_lp)
+            else:
+                setattr(ds, 'inc', temp_lp)
+    return args, ds
+
+@tim
+def retrieveRTC(url,args,ds):
+    args.tempfiles=[]
+    newfilepath = [None] * 2
+    response = requests.get(url)
+    zip_file = zipfile.ZipFile(BytesIO(response.content))
+    for file_name in zip_file.namelist():
+        if 'VV' in file_name or 'HH' in file_name:
+            if '.xml' not in file_name:
+                print('reading VV or HH '+file_name)
+                args, ds, newfilepath = VV_VHread(zip_file,file_name,args,ds,newfilepath,0)
+        if 'VH' in file_name or 'HV' in file_name:
+            if '.xml' not in file_name:
+                print('reading VH or HV '+file_name)
+                args, ds, newfilepath = VV_VHread(zip_file,file_name,args,ds,newfilepath,1)
+        if 'inc_map' in file_name:
+            if '.xml' not in file_name:
+                print('reading incidence angle '+file_name)
+                args, ds = inc_read(zip_file,file_name,args,ds)
+    return newfilepath, args, ds
+
+def readfileio(file,chunks=(1, 512,512)):
+    # Open the GeoTIFF file using rasterio
+    with rasterio.open(file) as src:
+        # Read the image in chunks using dask.array
+        img = da.from_array(src.read(1), chunks=chunks)
+    return (img)
+
+def filepathreader(ds,varnames, infilepath, chunks):
+    with rasterio.open(infilepath[0]) as src:
+    # Access the number of bands
+        num_bands = src.count
+    if num_bands > 1:
+        # VV, VH, Inc angle in one file. 
+        # make sure the Inc is the last band
+        with rasterio.open(infilepath[0]) as src:
+            for idx, name in enumerate(varnames):
+                setattr(ds, name, da.from_array(src.read(idx+1), chunks=chunks))
+    else:
+        for idx, filename in enumerate(infilepath):
+            setattr(ds, varnames[idx], readfileio(filename, chunks))
+            if 'amp' in infilepath[idx] or 'AMP' in infilepath[idx]:
+                    print(f"Transfer to sigmma: {infilepath[idx]}")
+                    setattr(ds, varnames[idx], tosigmma(getattr(ds, varnames[idx])))
+    return ds
+
+def get_src(filepath,args):
+    # Open the GeoTIFF file using rasterio
+    with rasterio.open(filepath) as src:
+        args.ref_src = src
+    return args
+
+def set_nan(ds,args):
+    ds.img_lp = da.where(ds.img_lp==args.ref_src.nodata,0,ds.img_lp)
+    ds.img_cp = da.where(ds.img_cp==args.ref_src.nodata,0,ds.img_cp)
+    return ds
+
+def normalize_inc(ds):
+    if ds.inc is not None:
+        print('Normalizing incidence angle')
+        ds.img_lp = ds.img_lp / np.cos(ds.inc)**2
+        ds.img_cp = ds.img_cp / np.cos(ds.inc)**2
+    return ds
+
+@tim
+def Load_Data(args):
+    filepath = args.filepath
+    wotif = args.wotif
+    LCCtif = None
+    args.varnames = ['img_lp', 'img_cp','inc']
+    class c:
+        pass
+    ds = c()
+    # initial inc
+    ds.inc = None
+    args.datamode = 'mem'
+    from urllib.parse import urlparse
+    if urlparse(filepath[0]).scheme=='https' and os.path.splitext(filepath[0])[1] != '.tif':
+        print('Input with ASF url ' + filepath[0])
+        infilepath, args, ds = retrieveRTC(filepath[0], args, ds)
+        print(infilepath)
+        if args.datamode != 'mem':
+            ds = filepathreader(ds,args.varnames, infilepath, args.chunks)
+    else:
+        infilepath = filepath
+        args = get_src(filepath[0],args)
+        args.tempfiles=[]
+        ds = filepathreader(ds,args.varnames, infilepath, args.chunks)
+    args.refmeta = args.ref_src.meta.copy()
+    # Output are binary mask so just one band
+    args.refmeta.update(count=1)
+    ds = set_nan(ds,args)
+    ds = normalize_inc(ds)
+    if args.MODE != 'desert': # No ancillary data is needed in the desert mode.
+        # water occurrence file
+        if wotif==None:
+            if args.datamode=='mem':
+                setattr(ds, 'water_occurrence', AncillaryData(ref = infilepath[0], chunk_size = args.chunks).getWO().squeeze())
+                #args.tempfiles = None
+            else:
+                tempfileWO = AncillaryData(ref = infilepath[0], chunk_size = args.chunks).getWO()
+                setattr(ds, 'water_occurrence', readhdf(tempfileWO.name,args.chunks).squeeze())
+                args.tempfiles.append(tempfileWO)
+        else:
+            setattr(ds, 'water_occurrence', readfileio(wotif,args.chunks))
+            #args.tempfiles = None
+        ds.img_lp = da.where(ds.water_occurrence>100,0,ds.img_lp)
+        ds.img_cp = da.where(ds.water_occurrence>100,0,ds.img_cp)
+        #land cover file
+        if LCCtif==None:
+            if args.datamode=='mem':
+                setattr(ds, 'land_cover', AncillaryData(ref = infilepath[0], chunk_size = args.chunks).getLCC().squeeze())
+                #args.tempfiles = None
+            else:
+                tempfileWO = AncillaryData(ref = infilepath[0], chunk_size = args.chunks).getLCC()
+                setattr(ds, 'land_cover', readhdf(tempfileWO.name,args.chunks).squeeze())
+                args.tempfiles.append(tempfileWO)
+        else:
+            setattr(ds, 'land_cover', readfileio(wotif,args.chunks))
+            #args.tempfiles = None
+    del ds.inc
+    return args, ds

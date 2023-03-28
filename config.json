@@ -1,0 +1,25 @@
+{"//NOTE_KEY_INPUTS//": "Please specify OUT_PATH, MODE, and filepath_list (input images)", 
+"OUT_PATH": "./OUTPUT", 
+"MODE": "normal", 
+"//Choises for MODE//": "normal or desert or single", 
+"filepath_list": [
+    ["https://d3gm2hf49xd6jj.cloudfront.net/fe4bd1f4-e97d-427c-8b3a-75b8e064637d/S1A_IW_20230113T135930_DVP_RTC30_G_spuned_F379.zip"], 
+    ["https://d3gm2hf49xd6jj.cloudfront.net/6fdd516b-e421-45f5-a505-aab9ba501bb1/S1A_IW_20230101T135931_DVP_RTC30_G_spuned_32DA.zip"], 
+    ["https://d3gm2hf49xd6jj.cloudfront.net/97972fdc-9410-41ba-b276-246bc648bb84/S1A_IW_20221220T135931_DVP_RTC30_G_spuned_6E29.zip"]
+        ],
+    "//Input data//":  "[VV_file1,VH_file1],[VV_file2,VH_file2],... or [ASF_url1.zip],[ASF_url2.zip]...",
+    "//Flood image//":  "The first one in the filepath_list should be the flood image",
+    "granules": 
+    ["S1A_IW_GRDH_1SDV_20230113T135930_20230113T135955_046766_059B44_774D_parameters_Truesigma0_30m_power", 
+    "S1A_IW_GRDH_1SDV_20230101T135931_20230101T135956_046591_059564_CB12_parameters_Truesigma0_30m_power", 
+    "S1A_IW_GRDH_1SDV_20221220T135931_20221220T135956_046416_058F77_4BA2_parameters_Truesigma0_30m_power"], 
+    "//granules//": "[SAR_name_1],[SAR_name_2],... a list of SAR granules (optional)", 
+    "//note_parameters//": "Bellow is parameters for RAPID, is it recommended to keep them default", 
+    "showDist": false, 
+    "Iter": false, 
+    "thProb": 0.87, 
+    "thProbMax": 0.89, "thProbMin": 0.87, "dThProb": 0.01, "thSeed": 80, "NSCE_th": 0.2, 
+    "PDFScaling": 1, "th_grid_ratio": 0.3, "ENL": 4.3, "blockSize": "auto", "//Choises for blockSize//": " 'auto'(Double quotes) or an integer", 
+    "nInter": 100, "morpho_seed_type": "both", "nWBClasses": [8, 80], "WBClasses": [5, 6, 50, 60], "thSensPre": 0.35, "thSensIn": 0.005, "rNWB_WST_Org": 0.3, 
+    "rNWB_WST": 0.4, "rNWB_ICD": 0.8, "thSize": 50, "thInund": 0.3, "rInund": 1, "rProb": 0.5, "imported": false, "optIterAlg": true, 
+    "log_file_err": "", "showProgress": false, "bInitialized": false, "bExport": true, "floodimage": false, "failed": false}
