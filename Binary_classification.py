@@ -290,7 +290,7 @@ def polsar_func3(args,ds):
         args,ds = importDtSrc(args,ds)
         args.bExport = False
     jointProbP=dualpol_dist(args,ds.jointProb_I_pol1,ds.jointProb_I_pol2)
-    #maskP = da.where(jointProbP>args.thPD, True, False)
+    #have to include the persistent water pixels
     maskP_water = da.logical_or(jointProbP>args.thPD, ds.isWater)
     t_pol1_water = ds.I_pol1[maskP_water]
     #t_pol2_water = da.where(da.logical_or(maskP,ds.isWater), ds.I_pol2, np.nan)
@@ -328,7 +328,7 @@ def findCenter3(args,ds):
                 #return args
         writeProg(args.logFile,args.thProb,args.NSCE,args.C,args.rho_c2,args.thPD,args.it,args.preENL,args.granules, args.ENL)
         # wether to use real ENL
-        args.ENL = args.preENL
+        #args.ENL = args.preENL
     args.C0,args.rho_c2 = args.C0Init,args.rho_c2Init
     args.minI = da.array([args.pol1_min,args.pol2_min])
     args.maxI = da.array([args.pol1_max,args.pol2_max])
