@@ -582,6 +582,7 @@ def thSeg4(args,ds):
         args.rho_c2 = args.rho_c2.compute()
     if isinstance(args.ThPD, da.Array):
         args.ThPD = args.ThPD.compute()
+    print('C: ', args.C, 'rho_c2: ', args.rho_c2, 'ThPD: ', args.ThPD)
     dual_pol, hhgrid, hvgrid, deltaHH, deltaHV = getgrids(args)
     if dual_pol:
         args.ThPDL=args.ThPD/da.array([30,300])
