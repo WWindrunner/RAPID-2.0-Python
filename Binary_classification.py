@@ -7,6 +7,8 @@ from scipy.stats.distributions import chi2
 from scipy.special import gamma, iv
 import rasterio
 import csv
+from sklearn.preprocessing import StandardScaler
+from sklearn.mixture import GaussianMixture
 
 def writeProg(logFile, thProb, NSCE, C, Rho_c, ThPD, it, preENL, granule, ENL = None):
     '''Write the progress of the algorithm to a log file.
@@ -40,8 +42,49 @@ def writeProg(logFile, thProb, NSCE, C, Rho_c, ThPD, it, preENL, granule, ENL = 
             writer.writerow(header)       
         writer.writerow(row)
 
+def to_db(arr):
+    result = 10 * da.log10(arr)
+    return da.where(result==-np.inf, np.nan, result)
+
+def mask_and_flatten(arr, mask, fill_value=np.nan):
+    return da.where(mask, fill_value, arr).flatten()
+
 @tim
-def findRange(I,ENL = 4.9, minOut = 1e-9, maxPrc = 90, maxP = 0.99, minP = 0.0001):
+def realwater_pixels(args, ds, fp = 67, gaussian_class = 2):
+    '''Find the real water pixels based on the Gaussian mixture model.'''
+    VV_db = to_db(ds.img_lp)
+    VH_db = to_db(ds.img_cp)
+    PW_mask = ds.water_occurrence >= 90
+    # Find the fp percentile of the VV and VH
+    two_percentile = da.array([np.nanpercentile(VV_db[PW_mask],fp), np.nanpercentile(VH_db[PW_mask],fp)])
+    area_mask_raw = da.logical_and(PW_mask, (VV_db<two_percentile[0]) & (VH_db<two_percentile[1]))
+    area_mask = da.logical_and(area_mask_raw, ds.img_lp != 0)
+    #prepare the data for GMM
+    data_PW_candi = da.vstack([mask_and_flatten(VV_db, ~area_mask), mask_and_flatten(VH_db,~area_mask)]).T
+    flat_mask = area_mask.flatten()
+    data = data_PW_candi[flat_mask,:]
+    # Normalize the input data
+    scaler = StandardScaler()
+    data_normalized = scaler.fit_transform(data)
+    # Instantiate a GaussianMixture object with 2 components, one will cover the lower and that is the water class
+    gmm = GaussianMixture(n_components=gaussian_class)
+    # Fit the GMM to your data
+    gmm.fit(data_normalized)
+    # Get the cluster assignments for each data point
+    labels = gmm.predict(data_normalized)
+    # Get the class mean
+    cls_means = da.stack([data.compute_chunk_sizes()[labels == i].mean(axis=0) for i in range(gaussian_class)])
+    # Find the label with the minimum mean value with respect to feature 0 and 1
+    min_label = cls_means[:, :2].sum(axis=1).argmin()
+    # create the pure water mask
+    opt_PW_mask = da.ones_like(flat_mask, dtype=np.int8) * -1
+    opt_PW_mask[(flat_mask,)] = labels
+    opt_PW_mask = opt_PW_mask.reshape(area_mask.shape)
+    real_PW_mask = da.where(opt_PW_mask==min_label, True, False)
+    return real_PW_mask
+
+@tim
+def findRange(I,ENL = 4.9, minOut = 1e-9, maxPrc = 95, maxP = 0.99, minP = 0.0001):
     # find the lower and upper limits from the sample
     # output
     # Iu: the upper 0.5 percentile of the class
@@ -94,10 +137,10 @@ def GetStatisticsFrmSample(args, ds):
     '''Get the statistics from the persistent water pixel sample.'''
     ENL = args.ENL 
     thProbSeeds=args.thSeed
-    #Valid_WOmask = da.where((ds.water_occurrence >= thProbSeeds) & (ds.water_occurrence <= 100), True, False)
-    Valid_WOmask = da.logical_and((ds.water_occurrence >= thProbSeeds) , (ds.water_occurrence <= 100))
+    #raw_Valid_WOmask = da.logical_and((ds.water_occurrence >= thProbSeeds) , (ds.water_occurrence <= 100))
+    raw_Valid_WOmask = realwater_pixels(args, ds)
     Valid_sigma = da.logical_and((ds.img_lp > 0) , (ds.img_cp > 0))
-    Valid_WOmask = da.logical_and(Valid_WOmask, Valid_sigma)
+    Valid_WOmask = da.logical_and(raw_Valid_WOmask, Valid_sigma)
     pol1_water = ds.img_lp[Valid_WOmask]
     pol2_water = ds.img_cp[Valid_WOmask]
     pol1_max,pol1_min,n1 = findRange(pol1_water, ENL)
@@ -110,13 +153,13 @@ def GetStatisticsFrmSample(args, ds):
         ENL = nNew
     basinMask = da.logical_and(da.logical_and(ds.img_lp>pol1_min, ds.img_cp>pol2_min), da.logical_and(ds.img_lp<pol1_max, ds.img_cp<pol2_max))
     isSample = da.logical_and(basinMask,Valid_WOmask)
-    #if not os.path.exists(fileSampleMap):
-        #isSample.astype(np.uint8).rio.to_raster(fileSampleMap)
     ds.isSample = isSample
     ini_pol1_water = ds.img_lp[isSample]
     ini_pol2_water = ds.img_cp[isSample]
     C0 = da.array([da.mean(ini_pol1_water), da.mean(ini_pol2_water)]).compute()
     rho_c2 = ((da.mean(ini_pol1_water * ini_pol2_water) - C0[0] * C0[1]) / (da.nanstd(ini_pol1_water) * da.nanstd(ini_pol2_water))).compute()
+    if rho_c2 < 0:
+        rho_c2 = 1e-3
     return C0,rho_c2,pol1_max,pol1_min,pol2_max,pol2_min,ENL,ds
 
 def importDtSrc(args,ds):
@@ -435,6 +478,8 @@ def optimizeDist4(args,ds):
                 pass
             else:
                 args,ds = findCenter3(args,ds)
+                #args.oC, args.oRho_c2, args.oThPD = da.array([0.01273375,0.001063574]),0.59821147,30298.356706971703
+                #return args,ds
                 args = updatestates(args,i)
                 while args.thPD_arr[i]<0.1:
                     args.PDFScaling = args.PDFScaling + 1
@@ -443,8 +488,8 @@ def optimizeDist4(args,ds):
                     args = updatestates(args,i)
                 if args.PDFContaminated:
                     args.oC=args.C_arr[i,:];args.oRho_c2=args.rho_c2_arr[i];args.n_est=args.ENL;args.oThPD=args.thPD_arr[i];args.mNSCE=args.NSCE_arr[i];args.oThProb=np.nan
-                    args.failed = True
-                    return args, ds
+                    finished = True
+                    break
                 if ~da.isnan(args.NSCE_arr[i]):
                     print('probability= %.8f, has been optimized by %d iterations' % (args.thProb ,args.it_arr[i]))
                     print('NSCE = %.8f' % args.NSCE_arr[i])
