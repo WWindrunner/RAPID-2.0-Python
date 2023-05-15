@@ -33,7 +33,7 @@ Specify the mode, input files, and output folder in .json file.
   * * (1) Raster files links or paths: [["file1_pol1","file1_pol2"],["file2_pol1","file2_pol2"],...,["fileN_pol1","fileN_pol2"]]. The first group should be the in-event image, and the rest are pre-event images.
   * * (2) ASF RTC urls: [["ASF_url1.zip"],["ASF_url2.zip"],...,["ASF_urlN.zip"]].
 * "granules" (optional): Granules name for each image, will extract from input file path if not provided. Refer to 'config.json' for more info.
-* 'config.json' shows a demo using ASF RTC30 urls.
+* 'config.json' shows a demo using ASF RTC30 urls. The urls are valid until 05/27/2023.
 
 ### 2.3 Data input requirements
 1. Dual polarizations.
