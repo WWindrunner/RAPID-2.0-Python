@@ -6,7 +6,7 @@ RAPID system in python version. Please note that the code is still under develop
 
 ## 1 Requirements
 ```
-conda install gdal rasterio dask scipy pandas h5py jupyter tqdm -c conda-forge
+conda install gdal rasterio dask scipy pandas h5py jupyter tqdm scikit-learn dask-ml -c conda-forge
 ```
 
 ## 2 Usage
