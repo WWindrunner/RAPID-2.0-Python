@@ -6,11 +6,10 @@ import tempfile
 import dask
 import dask.array as da
 import rasterio
-import h5py
 import zipfile
 from io import BytesIO
 import requests
-
+from scipy import ndimage
 
 def tosigmma(arr):
     return np.power(10,(2*np.log10(arr)-8.3))
@@ -23,7 +22,9 @@ def readfileio(file,chunks=(1, 512,512)):
     return (img)
 
 def readhdf(file,chunks=(1, 512,512)):
-    f = h5py.File(file)
+    # Not use anymore, 05012023
+    #f = h5py.File(file)
+    f = None
     print("Keys: %s" % f.keys())
     a_group_key = list(f.keys())[0]
     d = f[a_group_key]
@@ -88,13 +89,6 @@ def retrieveRTC(url,args,ds):
                 args, ds = inc_read(zip_file,file_name,args,ds)
     return newfilepath, args, ds
 
-def readfileio(file,chunks=(1, 512,512)):
-    # Open the GeoTIFF file using rasterio
-    with rasterio.open(file) as src:
-        # Read the image in chunks using dask.array
-        img = da.from_array(src.read(1), chunks=chunks)
-    return (img)
-
 def filepathreader(ds,varnames, infilepath, chunks):
     with rasterio.open(infilepath[0]) as src:
     # Access the number of bands
@@ -122,6 +116,12 @@ def get_src(filepath,args):
 def set_nan(ds,args):
     ds.img_lp = da.where(ds.img_lp==args.ref_src.nodata,0,ds.img_lp)
     ds.img_cp = da.where(ds.img_cp==args.ref_src.nodata,0,ds.img_cp)
+    print('set nan for BRD noise by erosion with 5 pixels')
+    valid_mask = da.where(ds.img_lp>0,1,0)
+    valid_BRD_mask = ndimage.binary_erosion(valid_mask,iterations=5)
+    ds.img_lp = da.where(valid_BRD_mask==1,ds.img_lp,0)
+    ds.img_cp = da.where(valid_BRD_mask==1,ds.img_cp,0)
+    del valid_mask, valid_BRD_mask  
     return ds
 
 def normalize_inc(ds):
@@ -130,6 +130,20 @@ def normalize_inc(ds):
         ds.img_lp = ds.img_lp / np.cos(ds.inc)**2
         ds.img_cp = ds.img_cp / np.cos(ds.inc)**2
     return ds
+
+#Convert the ESA LCC value to GP LCC
+def ESALCC2GPLCC(arr):
+    '''
+    Convert the ESA LCC value to GP LCC, 05/08/2023
+    So we don't have to change the predefined LCC value
+    '''
+    new_arr = np.zeros_like(arr)
+    # Define the original and target value ranges
+    origin_LCC = [40,10,30,20,90,80,100,50,60,70,95]
+    Valuerange_LCC = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 20]
+    for i in range(len(origin_LCC)):
+        new_arr[(arr==origin_LCC[i])] = Valuerange_LCC[i]
+    return new_arr
 
 @tim
 def Load_Data(args):
@@ -144,7 +158,7 @@ def Load_Data(args):
     ds.inc = None
     args.datamode = 'mem'
     from urllib.parse import urlparse
-    if urlparse(filepath[0]).scheme=='https' and os.path.splitext(filepath[0])[1] != '.tif':
+    if urlparse(filepath[0]).scheme=='https' and '.tif' not in filepath[0]:
         print('Input with ASF url ' + filepath[0])
         infilepath, args, ds = retrieveRTC(filepath[0], args, ds)
         print(infilepath)
@@ -159,7 +173,7 @@ def Load_Data(args):
     # Output are binary mask so just one band
     args.refmeta.update(count=1)
     ds = set_nan(ds,args)
-    ds = normalize_inc(ds)
+    #ds = normalize_inc(ds)
     if args.MODE != 'desert': # No ancillary data is needed in the desert mode.
         # water occurrence file
         if wotif==None:
@@ -187,5 +201,8 @@ def Load_Data(args):
         else:
             setattr(ds, 'land_cover', readfileio(wotif,args.chunks))
             #args.tempfiles = None
+        # Convert ESA LCC to GP LCC
+        ds.land_cover = ESALCC2GPLCC(ds.land_cover)
     del ds.inc
+    print(ds.img_lp)
     return args, ds

@@ -10,15 +10,31 @@ from Binary_classification import *
 from Morpho_process import *
 from Compensation import *
 from NDFI import *
+from quick_look import *
+from Self_supervised import *
+import subprocess
 # Suppress all warnings
 import warnings
 warnings.filterwarnings("ignore")
 
+'''
+Developed by: Qing Yang, Xinyi Shen. University of Wisconsin-Milwaukee.
+Contact: yang2473@uwm.edu
+
+Updated 05/15/2023, Adaptive Initialization.
+Created 03/01/2023, RAPID python version.
+'''
+
 def mosaic_pre(output):
+    '''
+    Mosaic the pre-event water mask for the dry reference
+    Since we are not directly implementing change detection in terms of backscattering values, 
+    the dry and flood images do not need to be in the same geoextent.
+    '''
     if len(output)==1 and output[0][0].MODE == 'normal':
         output[0][0].floodimage = False
-        print('No dry images, mosaic quit')
-    elif len(output)==1 and output[0][0].MODE == 'single':
+        print('No dry images, consider changing the mode to single!')
+    elif len(output)==1 or output[0][0].MODE == 'single':
         output[0][1].pre_mod_mask = da.where(output[0][1].water_occurrence>50,1,0)
         print('Single flood image mode, build pre-event water with ESA water occurrence >50')
     else:
@@ -36,31 +52,36 @@ def mosaic_pre(output):
         del mosaic_results,mesaic_raw
     return output
 
-def parse(config_json):
+def parse(config_json=None):
+    '''
+    Parse the arguments with default values
+    Read the config file if provided
+    '''
     parser = argparse.ArgumentParser()
     parser.add_argument('--showDist', default=False)
     parser.add_argument('--Iter', default=False)
     parser.add_argument('--granules', default=[])
+    parser.add_argument('--MODE', type=str, default='single')
     parser.add_argument('--thProb', type=float, default=0.87)
     parser.add_argument('--thProbMax', type=float, default=0.89)
     parser.add_argument('--thProbMin', type=float, default=0.87)
     parser.add_argument('--dThProb', type=float, default=0.01)
-    parser.add_argument('--thSeed', type=float, default=75)
+    parser.add_argument('--thSeed', type=float, default=90)
     parser.add_argument('--NSCE_th', type=float, default=0.2)
     parser.add_argument('--PDFScaling', type=float, default=1)
     parser.add_argument('--th_grid_ratio', type=float, default=0.3)
     parser.add_argument('--ENL', type=float, default=4.9)
-    parser.add_argument('--blockSize', default='auto')
+    parser.add_argument('--blockSize', default=1024)
     parser.add_argument('--nInter', type=int, default=100)
     parser.add_argument('--morpho_seed_type', type=str, default='both')
     parser.add_argument('--nWBClasses', default=[8,80])
     parser.add_argument('--WBClasses', default=[5,6,50,60])
-    parser.add_argument('--thSensPre', type=float, default=0.3)
-    parser.add_argument('--thSensIn', type=float, default=0.01)
+    parser.add_argument('--thSensPre', type=float, default=0.2)
+    parser.add_argument('--thSensIn', type=float, default=0.1)
     parser.add_argument('--rNWB_WST_Org', type=float, default=0.3)
     parser.add_argument('--rNWB_WST', type=float, default=0.4)
     parser.add_argument('--rNWB_ICD', type=float, default=0.8)
-    parser.add_argument('--thSize', type=int, default=50)
+    parser.add_argument('--thSize', type=int, default=10)
     parser.add_argument('--thInund', type=float, default=0.3)
     parser.add_argument('--rInund', type=float, default=1)
     parser.add_argument('--rProb', type=float, default=0.5)
@@ -73,18 +94,21 @@ def parse(config_json):
     parser.add_argument('--floodimage', default=False)
     parser.add_argument('--failed', default=False)
     args, unparsed = parser.parse_known_args()
-    with open(config_json, 'r') as f:
-        loaded_args = json.load(f)
-    for arg in loaded_args:
-        setattr(args, arg, loaded_args[arg])
+    if config_json is not None:
+        with open(config_json, 'r') as f:
+            loaded_args = json.load(f)
+        for arg in loaded_args:
+            setattr(args, arg, loaded_args[arg])
     return args
 
 def dup_args(args, filepath,wotif=None):
+    '''
+    Duplicate the arguments for each input SAR image (dual-pol)
+    '''
     args_new = argparse.Namespace(**vars(args))
     args_new.filepath = filepath
     args_new.wotif = wotif
-    args_new.dirOut = os.path.join(args_new.WORK_PATH, os.path.splitext(max(filepath[0].split('/'), key=len))[0])
-                                #os.path.splitext(os.path.split(filepath[0])[1])[0])
+    args_new.dirOut = os.path.join(args_new.WORK_PATH, os.path.splitext(args.filepath_list[0][0].split('/')[-1])[0])
     args_new.fileSampleMap=os.path.join(args_new.dirOut,'SampleMap.tif') #intermedian result, not used for now
     args_new.logFile=os.path.join(args_new.dirOut,'sta_log.csv')
     os.makedirs(args_new.dirOut, exist_ok = True)
@@ -94,42 +118,63 @@ def dup_args(args, filepath,wotif=None):
         args_new.chunks = args.blockSize
     return args_new
 
-def RAPID(config_file=None):
-    with Timer('RAPID total time'):
-        # Get the path of the current code folder
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        os.chdir(script_dir)
-        if config_file is None:
-            config_file = os.path.join(script_dir, 'config.json')
+@tim
+def RAPID(*args, **kwargs):
+    if len(args) == 3:
+        # input dual-pol SAR path and output folder from terminal
+        # single mode (default)
+        filepath = [args[0], args[1]]
+        OUT_PATH = args[2]
+        config_file = None
+        args = parse(config_file)
+        args.OUT_PATH = OUT_PATH
+        args.filepath_list = [filepath]
+    elif len(args) == 1:
+        # input geojson file
+        # mode and dry referen should be specified in config file
+        config_file = [args[0]]
         if not os.path.exists(config_file):
             raise ValueError(f"{config_file} does not exist!")
-        
-        #get input file
         args = parse(config_file)
+    else:
+        raise ValueError("Wrong number of input arguments!")
 
-        #Define ouput path
+    #Refine ouput path if already exists
+    raw_out_path = os.path.join(args.OUT_PATH, os.path.splitext(args.filepath_list[0][0].split('/')[-1])[0])
+    if os.path.exists(raw_out_path):
         now = datetime.datetime.now()
         now_str = now.strftime('%Y-%m-%d_%H-%M-%S')
         rand_num = random.randint(1, 1000000)
-        args.WORK_PATH = os.path.join(args.OUT_PATH, f'{now_str}_{rand_num}')
-        os.makedirs(args.WORK_PATH, exist_ok=True)
-        filepath_list = args.filepath_list
-        for arg in vars(args):
-            print(f"{arg}: {getattr(args, arg)}")
+        args.WORK_PATH = raw_out_path + f'_{now_str}_{rand_num}'
+    else:
+        args.WORK_PATH = raw_out_path
+    os.makedirs(args.WORK_PATH, exist_ok=True)
+    filepath_list = args.filepath_list
+    for arg in vars(args):
+        print(f"{arg}: {getattr(args, arg)}")
+    
+    #Initial args list for each image
+    args_list = []
+    for idx,filepath in enumerate(filepath_list):
+        args1 = dup_args(args, filepath, wotif=None)
+        if len(filepath_list) == len(args.granules):
+            args1.granules = args.granules[idx]
+        else:
+            args1.granules = os.path.splitext(filepath[0].split('/')[-1])[0]
+        args_list.append(args1)
+    # set flood image
+    args_list[0].floodimage = True
 
-        #Initial args list for each image
-        args_list = []
-        for idx,filepath in enumerate(filepath_list):
-            args1 = dup_args(args, filepath, wotif=None)
-            if len(filepath_list) == len(args.granules):
-                args1.granules = args.granules[idx]
-            else:
-                args1.granules = filepath_list
-            args_list.append(args1)
-        
-        # set flood image
-        args_list[0].floodimage = True
-
+    if args_list[0].MODE =='swd':
+        '''
+        Self-supervised Water Detection. An alternative algorithm for test purpose.
+        '''
+        print('Running swd!')
+        output = dask.compute(*[dask.delayed(Load_Data)(args_list[0])])
+        output[0][1].Compensate_mask,output[0][0].fileOutCompensate, output[0][1].direct_mask = swd(output[0][0], output[0][1])
+        output[0][0].MODE = 'single'
+        out_filepath = quick_look(output)
+    else:
         # load image and get ancillary data
         with Timer('Load_Data Total'):
             output = dask.compute(*[dask.delayed(Load_Data)(arggs) for arggs in args_list])
@@ -145,9 +190,8 @@ def RAPID(config_file=None):
                 output = dask.compute(*[dask.delayed(Morph_proc)(*single_out) for single_out in output])
             with Timer('Compensation'):
                 output = dask.compute(*[dask.delayed(Compensate)(*single_out) for single_out in output])
-            #with Timer('Morph_proc + Compensation only flood image'):
-            #    morpho = dask.compute(dask.delayed(Morph_proc)(*output[0]))
-            #    _ = dask.compute(dask.delayed(Compensate)(*morpho[0]))
+            # produce quick look figures
+            out_filepath = quick_look(output)
         else:
             print('Running desert mode!')
             args_ndfi, ds_ndfi = NDFI(output)

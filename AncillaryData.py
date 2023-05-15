@@ -7,6 +7,7 @@ from rasterio.warp import reproject, Resampling, transform_bounds, calculate_def
 import dask
 import dask.array as da
 from dask import delayed, compute
+from osgeo import ogr
 
 class AncillaryData():    
     """
@@ -113,7 +114,50 @@ class AncillaryData():
         """
         
         Hcrop_Ex = self.bounds
-        LCCmainURL = "http://data.ess.tsinghua.edu.cn/data/fromglc10_2017v01/fromglc10v01"
+        """
+        Get the intersect copernicus glo30 data file list based on bounds and offical geojson
+        """
+        s3_url_prefix = "https://esa-worldcover.s3.eu-central-1.amazonaws.com"
+        # Open the geojson file
+        DEM_GEOJSON = f'{s3_url_prefix}/v100/2020/esa_worldcover_2020_grid.geojson'
+        dataSource = ogr.Open(DEM_GEOJSON)
+        layer = dataSource.GetLayer()
+        # Create an OGR geometry object from the Hcrop_Ex
+        # Create an empty polygon
+        extent_geom = ogr.Geometry(ogr.wkbPolygon)
+        # Add the vertices of the bounding box
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        ring.AddPoint(Hcrop_Ex[0], Hcrop_Ex[1])
+        ring.AddPoint(Hcrop_Ex[2], Hcrop_Ex[1])
+        ring.AddPoint(Hcrop_Ex[2], Hcrop_Ex[3])
+        ring.AddPoint(Hcrop_Ex[0], Hcrop_Ex[3])
+        ring.AddPoint(Hcrop_Ex[0], Hcrop_Ex[1])
+        extent_geom.AddGeometry(ring)
+        # Loop over features and find intersecting features
+        elements = []
+        for feature in layer:
+            geom = feature.GetGeometryRef()
+            if extent_geom.Intersects(geom):
+                tile = feature.GetField('ll_tile')
+                file_path = f"{s3_url_prefix}/v100/2020/map/ESA_WorldCover_10m_2020_v100_{tile}_Map.tif"
+                print(file_path)
+                elements.append(file_path)
+        merged_resandclip = self.merge_res(elements)
+        return merged_resandclip
+    
+    def getLCC_ori(self):
+        """
+        Get land cover data from GongPeng LCC, based on the geobounds of reference tif or src.
+        Resample and clip with rasterio.
+
+        Returns
+        -------
+            Dask array or tempfile of land cover
+        """
+        
+        Hcrop_Ex = self.bounds
+        #LCCmainURL = "http://data.ess.tsinghua.edu.cn/data/fromglc10_2017v01/fromglc10v01" % expired on May/03/2023, refer to http://data.ess.tsinghua.edu.cn/
+        LCCmainURL = '/gpfs/sharedfs1/manoslab/data/Land_Cover/GPfromglc10_2017v01/fromglc10v01'
         LCCfileregex = "_LA_LO.tif"
         maxLoLCC = np.ceil(Hcrop_Ex[2])
         minLoLCC = np.floor(Hcrop_Ex[0])
@@ -133,6 +177,37 @@ class AncillaryData():
                 elements.append(url)
         merged_resandclip = self.merge_res(elements)
         return merged_resandclip
+    
+    def glo30list(bounds:tuple) -> list:
+        """
+        Get the intersect copernicus glo30 data file list based on bounds and offical geojson
+        """
+        # Open the geojson file
+        DEM_GEOJSON = '/vsicurl/https://asf-dem-west.s3.amazonaws.com/v2/cop30-2021.geojson'
+        dataSource = ogr.Open(DEM_GEOJSON)
+        layer = dataSource.GetLayer()
+        # Create an OGR geometry object from the bounds
+        # Create an empty polygon
+        extent_geom = ogr.Geometry(ogr.wkbPolygon)
+        # Add the vertices of the bounding box
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        ring.AddPoint(bounds[0], bounds[1])
+        ring.AddPoint(bounds[2], bounds[1])
+        ring.AddPoint(bounds[2], bounds[3])
+        ring.AddPoint(bounds[0], bounds[3])
+        ring.AddPoint(bounds[0], bounds[1])
+        extent_geom.AddGeometry(ring)
+        # Loop over features and find intersecting features
+        elements = []
+        for feature in layer:
+            geom = feature.GetGeometryRef()
+            if extent_geom.Intersects(geom):
+                file_path = feature.GetField('file_path')
+                print(file_path)
+                elements.append(file_path)
+        # Close the data source
+        dataSource = None
+        return elements
 
     def merge_res(self, rasterfiles):
         """
@@ -215,13 +290,3 @@ def templatesESAwater(revision):
     url_tmpl += '/{ds}/{file}'
     file_tmpl += '.tif'
     return (url_tmpl, file_tmpl, padding)
-
-#if __name__ == "__main__":
-    #reference SAR data
-    #filepath = r'https://ebd-public-mgrs-tiles.s3.us-east-1.wasabisys.com/test/data/17RNM_20m_A_048_2022_10_02_vh_mtfil_amp.tif'
-    #ds = rioxarray.open_rasterio(filepath, chunks='auto')
-    #print("Using memory {:,} B".format(process_memory()))
-    #with Timer('get ancillary data'):
-    #    ds_WO = AncillaryData(ds,None,os.environ['HOME']).getWO()
-    #show the info of water occurence dataarray
-    #print_raster(ds_WO)

@@ -9,9 +9,16 @@ import rasterio
 import csv
 from sklearn.preprocessing import StandardScaler
 from sklearn.mixture import GaussianMixture
+from scipy.stats import multivariate_normal
+from sklearn.cluster import KMeans
+from EM_threshold import *
+import scipy.ndimage.filters as filters
+from scipy.ndimage import median_filter
+from Initial_sample import *
 
-def writeProg(logFile, thProb, NSCE, C, Rho_c, ThPD, it, preENL, granule, ENL = None):
-    '''Write the progress of the algorithm to a log file.
+def writeProg(logFile, thProb, NSCE, C, Rho_c, ThPD, it, preENL, granule, ENL = None, mean_p1=999,mean_p2=999):
+    '''
+    Write the progress of the wishart optimization to a csv file.
     freqency: after water sample initialzation or after each optimization of thProb.
     '''
     if not os.path.isfile(logFile):
@@ -32,135 +39,19 @@ def writeProg(logFile, thProb, NSCE, C, Rho_c, ThPD, it, preENL, granule, ENL = 
             preENL = preENL.compute()
         if ENL is not None and isinstance(ENL, da.Array):
             ENL = ENL.compute()
+        if isinstance(mean_p1, da.Array):
+            mean_p1 = mean_p1.compute()
+        if isinstance(mean_p2, da.Array):
+            mean_p2 = mean_p2.compute()
         if len(C) == 2:
-            header = ['Prob', 'NSCE', 'C11', 'C22', 'Rho_c', 'ThPD', 'it', 'preENL', 'ENL', 'granule']
-            row = [thProb, NSCE, C[0], C[1], Rho_c, ThPD, it, preENL, ENL, granule]
+            header = ['Prob', 'NSCE', 'C11', 'C22', 'Rho_c', 'ThPD','mean_p1','mean_p2', 'it', 'preENL', 'ENL', 'granule']
+            row = [thProb, NSCE, C[0], C[1], Rho_c, ThPD,mean_p1,mean_p2, it, preENL, ENL, granule]
         else:
-            header = ['Prob', 'NSCE', 'C', 'Rho_c', 'ThPD', 'it', 'preENL', 'ENL', 'granule']
-            row = [thProb, NSCE, C, Rho_c, ThPD, it, preENL, ENL, granule]
+            header = ['Prob', 'NSCE', 'C', 'Rho_c', 'ThPD','mean_p1','mean_p2', 'it', 'preENL', 'ENL', 'granule']
+            row = [thProb, NSCE, C, Rho_c, ThPD,mean_p1,mean_p2, it, preENL, ENL, granule]
         if writeHeader:
             writer.writerow(header)       
         writer.writerow(row)
-
-def to_db(arr):
-    result = 10 * da.log10(arr)
-    return da.where(result==-np.inf, np.nan, result)
-
-def mask_and_flatten(arr, mask, fill_value=np.nan):
-    return da.where(mask, fill_value, arr).flatten()
-
-@tim
-def realwater_pixels(args, ds, fp = 67, gaussian_class = 2):
-    '''Find the real water pixels based on the Gaussian mixture model.'''
-    VV_db = to_db(ds.img_lp)
-    VH_db = to_db(ds.img_cp)
-    PW_mask = ds.water_occurrence >= 90
-    # Find the fp percentile of the VV and VH
-    two_percentile = da.array([np.nanpercentile(VV_db[PW_mask],fp), np.nanpercentile(VH_db[PW_mask],fp)])
-    area_mask_raw = da.logical_and(PW_mask, (VV_db<two_percentile[0]) & (VH_db<two_percentile[1]))
-    area_mask = da.logical_and(area_mask_raw, ds.img_lp != 0)
-    #prepare the data for GMM
-    data_PW_candi = da.vstack([mask_and_flatten(VV_db, ~area_mask), mask_and_flatten(VH_db,~area_mask)]).T
-    flat_mask = area_mask.flatten()
-    data = data_PW_candi[flat_mask,:]
-    # Normalize the input data
-    scaler = StandardScaler()
-    data_normalized = scaler.fit_transform(data)
-    # Instantiate a GaussianMixture object with 2 components, one will cover the lower and that is the water class
-    gmm = GaussianMixture(n_components=gaussian_class)
-    # Fit the GMM to your data
-    gmm.fit(data_normalized)
-    # Get the cluster assignments for each data point
-    labels = gmm.predict(data_normalized)
-    # Get the class mean
-    cls_means = da.stack([data.compute_chunk_sizes()[labels == i].mean(axis=0) for i in range(gaussian_class)])
-    # Find the label with the minimum mean value with respect to feature 0 and 1
-    min_label = cls_means[:, :2].sum(axis=1).argmin()
-    # create the pure water mask
-    opt_PW_mask = da.ones_like(flat_mask, dtype=np.int8) * -1
-    opt_PW_mask[(flat_mask,)] = labels
-    opt_PW_mask = opt_PW_mask.reshape(area_mask.shape)
-    real_PW_mask = da.where(opt_PW_mask==min_label, True, False)
-    return real_PW_mask
-
-@tim
-def findRange(I,ENL = 4.9, minOut = 1e-9, maxPrc = 95, maxP = 0.99, minP = 0.0001):
-    # find the lower and upper limits from the sample
-    # output
-    # Iu: the upper 0.5 percentile of the class
-    # Id: the lower 0.5 percentile of the class
-    # ENL_a: the actual ENL
-    # input
-    # I n-look intensity
-    # ENL: equivalent number of looks
-    # minOut: a lower limit to rule out marginal pixels of zero value. Default value: 1e-9
-    # maxPrc: a safe upper percentile to rule out other classes. Default 90.
-    I_max = da.percentile(I[I>minOut],maxPrc)
-    I_min=(I_max+da.min(I))/10
-    h, bins = da.histogram(I, bins=500, range=[I_min[0],I_max[0]])
-    Ip = bins[da.argmax(h)]
-    xu = chi2.ppf(maxP, df=2*ENL)
-    xd = chi2.ppf(minP, df=2*ENL)
-    x = da.linspace(xd, xu, 500)
-    pd=chi2.pdf(x,2*ENL)
-    xp = x[pd.argmax()]
-    Iu=xu/xp*Ip
-    Id=xd/xp*Ip
-    # final adjustment
-    ratio=1
-    scaling=1
-    Iu0=Iu
-    while ratio>1-maxP:
-        Iu=scaling*Iu0
-        scaling = scaling+0.5
-        mainArea = da.count_nonzero((I<Iu) & (I>Id))
-        tailingArea = da.count_nonzero((I>=Iu) & (I<5*Iu))
-        ratio=tailingArea/(tailingArea+mainArea)
-    ratio=1
-    scaling=1
-    Id0=Id
-    while ratio>1-minP:
-        Id1=Id0/scaling
-        scaling = scaling+0.5
-        mainArea = da.count_nonzero((I<Iu) & (I>Id))
-        tailingArea = da.count_nonzero((I>Id1/5 ) & (I<Id))
-        ratio=tailingArea/(tailingArea+mainArea)
-        Id=Id1
-    avai_I = I[(I<Iu) & (I>Id)]
-    E = da.nanmean(avai_I)
-    Var = (da.nanstd(avai_I)**2)
-    ENLa=(E**2/Var)
-    return Iu.compute(),Id.compute(),ENLa.compute()
-
-@tim
-def GetStatisticsFrmSample(args, ds):
-    '''Get the statistics from the persistent water pixel sample.'''
-    ENL = args.ENL 
-    thProbSeeds=args.thSeed
-    #raw_Valid_WOmask = da.logical_and((ds.water_occurrence >= thProbSeeds) , (ds.water_occurrence <= 100))
-    raw_Valid_WOmask = realwater_pixels(args, ds)
-    Valid_sigma = da.logical_and((ds.img_lp > 0) , (ds.img_cp > 0))
-    Valid_WOmask = da.logical_and(raw_Valid_WOmask, Valid_sigma)
-    pol1_water = ds.img_lp[Valid_WOmask]
-    pol2_water = ds.img_cp[Valid_WOmask]
-    pol1_max,pol1_min,n1 = findRange(pol1_water, ENL)
-    pol2_max,pol2_min,n2 = findRange(pol2_water, ENL)
-    nNew=((n1+n2)/2)
-    print(f'New:{nNew}, Ori:{ENL}, for {args.filepath[0]}')
-    if abs(nNew-ENL)/ENL>0.2:
-        #Wether to use the new ENL or not.
-        print(f'Too much deviation between estimated and theoretical ENLs.')
-        ENL = nNew
-    basinMask = da.logical_and(da.logical_and(ds.img_lp>pol1_min, ds.img_cp>pol2_min), da.logical_and(ds.img_lp<pol1_max, ds.img_cp<pol2_max))
-    isSample = da.logical_and(basinMask,Valid_WOmask)
-    ds.isSample = isSample
-    ini_pol1_water = ds.img_lp[isSample]
-    ini_pol2_water = ds.img_cp[isSample]
-    C0 = da.array([da.mean(ini_pol1_water), da.mean(ini_pol2_water)]).compute()
-    rho_c2 = ((da.mean(ini_pol1_water * ini_pol2_water) - C0[0] * C0[1]) / (da.nanstd(ini_pol1_water) * da.nanstd(ini_pol2_water))).compute()
-    if rho_c2 < 0:
-        rho_c2 = 1e-3
-    return C0,rho_c2,pol1_max,pol1_min,pol2_max,pol2_min,ENL,ds
 
 def importDtSrc(args,ds):
     if not args.imported:
@@ -348,8 +239,7 @@ def findCenter3(args,ds):
     args.it = 0
     args.optimizePDF = False
     if not args.bInitialized:
-        args.C0Init,args.rho_c2Init,args.pol1_max,args.pol1_min,args.pol2_max,args.pol2_min,args.ENL, ds = \
-            GetStatisticsFrmSample(args, ds)
+        args, ds = GetStatisticsFrmSample(args, ds)
         args.C,args.rho_c2 = args.C0Init,args.rho_c2Init
         args.bInitialized=True
         args.minI = da.array([args.pol1_min,args.pol2_min])
@@ -369,9 +259,11 @@ def findCenter3(args,ds):
                 args.it = 0
                 args.maxHH,args.minHH,args.maxHV,args.minHV = args.pol1_max,args.pol1_min,args.pol2_max,args.pol2_min
                 #return args
-        writeProg(args.logFile,args.thProb,args.NSCE,args.C,args.rho_c2,args.thPD,args.it,args.preENL,args.granules, args.ENL)
+        args.NSCE_Init = args.NSCE
+        writeProg(args.logFile,999,args.NSCE,args.C,args.rho_c2,args.thPD,args.it, args.preENL,args.granules, args.ENL,
+                  args.mean_pol1,args.mean_pol2)
         # wether to use real ENL
-        #args.ENL = args.preENL
+        args.ENL = args.preENL
     args.C0,args.rho_c2 = args.C0Init,args.rho_c2Init
     args.minI = da.array([args.pol1_min,args.pol2_min])
     args.maxI = da.array([args.pol1_max,args.pol2_max])
@@ -434,7 +326,7 @@ def findCenter3(args,ds):
 
 def initialstates(args,nDim):
     args.nTh=int((args.thProbMax-args.thProbMin)/args.dThProb)+1
-    args.NSCE_arr = da.zeros((args.nTh,1))
+    args.NSCE_arr = da.ones((args.nTh,1)) * -9e12
     args.C_arr = da.zeros((args.nTh,nDim))
     args.rho_c2_arr = da.zeros((args.nTh,1))
     args.thPD_arr = da.zeros((args.nTh,1))
@@ -460,8 +352,8 @@ def optimizeDist4(args,ds):
     newStartMin=False
     args.ini_thPD = None
     while not finished:
-        if args.thProbMin < 0.6: 
-            print("Warning: minimal ThProb is lower than 0.6, yet an optimal is not found. The optimization is terminated")
+        if args.thProbMin < 0.5: 
+            print("Warning: minimal ThProb is lower than 0.5, yet an optimal is not found. The optimization is terminated")
             finished=True
             args.oC = args.C0Init
             args.oRho_c2 = args.rho_c2Init
@@ -473,7 +365,7 @@ def optimizeDist4(args,ds):
                 newStartMin=True
             args.thProb = args.thProbMin+i*args.dThProb
             args.thProb = np.round(args.thProb, decimals=2)
-            if args.NSCE_arr[i] != 0:
+            if args.NSCE_arr[i] != -9e12:
                 #print('Computed probability, Skipped')
                 pass
             else:
@@ -486,6 +378,10 @@ def optimizeDist4(args,ds):
                     print('The segment threshold of probability is too small. Please expand the PDF domain.\n Enlarge it and recompute!')
                     args,ds = findCenter3(args,ds)
                     args = updatestates(args,i)
+                    if args.PDFScaling > 20:
+                        print('The PDF scaling is too large, Jump!')
+                        args.failed=True
+                        break
                 if args.PDFContaminated:
                     args.oC=args.C_arr[i,:];args.oRho_c2=args.rho_c2_arr[i];args.n_est=args.ENL;args.oThPD=args.thPD_arr[i];args.mNSCE=args.NSCE_arr[i];args.oThProb=np.nan
                     finished = True
@@ -511,7 +407,7 @@ def optimizeDist4(args,ds):
                     args.rho_c2_arr[-1] = args.rho_c2_arr[0]; args.rho_c2_arr[0:-1] = 0
                     args.thPD_arr[-1] = args.thPD_arr[0]; args.thPD_arr[0:-1] = 0
                     args.it_arr[-1] = args.it_arr[0]; args.it_arr[0:-1] = 0
-                    args.NSCE_arr[-1] = args.NSCE_arr[0]; args.NSCE_arr[0:-1] = 0
+                    args.NSCE_arr[-1] = args.NSCE_arr[0]; args.NSCE_arr[0:-1] = -9e12
                 else:
                     print('the current probability threshold is too large yet an optimal one is not found.')
                     finished=True
@@ -533,7 +429,7 @@ def optimizeDist4(args,ds):
                         args.C_arr = da.vstack((a, args.C_arr))
                         args.rho_c2_arr = da.vstack((np.nan, args.rho_c2_arr))
                         args.thPD_arr = da.vstack((0, args.thPD_arr))
-                        args.NSCE_arr = da.vstack((0, args.NSCE_arr))
+                        args.NSCE_arr = da.vstack((-9e12, args.NSCE_arr))
                         args.it_arr = da.vstack((0, args.it_arr))
                         args.nTh = args.nTh + 1
                     else:
@@ -552,7 +448,7 @@ def optimizeDist4(args,ds):
                         args.C_arr = da.vstack((args.C_arr, a))
                         args.rho_c2_arr = da.vstack((args.rho_c2_arr, np.nan))
                         args.thPD_arr = da.vstack((args.thPD_arr, 0))
-                        args.NSCE_arr = da.vstack((args.NSCE_arr, 0))
+                        args.NSCE_arr = da.vstack((args.NSCE_arr, -9e12))
                         args.it_arr = da.vstack((args.it_arr, 0))
                     else:
                         print('Reached maximum ThProb (0.99) yet the NSCE is increasing. Iteration stops')
@@ -561,6 +457,10 @@ def optimizeDist4(args,ds):
     args.n_est=args.ENL
     #indexFailed = da.logical_or(args.NSCE_arr==0,da.isnan(args.NSCE_arr))
     #args.NSCE_arr[indexFailed]=-np.Inf
+    args.C_arr = da.vstack((args.C_arr, args.C0Init))
+    args.rho_c2_arr = da.vstack((args.rho_c2_arr, args.rho_c2Init))
+    args.thPD_arr = da.vstack((args.thPD_arr, args.ini_thPD))
+    args.NSCE_arr = da.vstack((args.NSCE_arr, args.NSCE_Init))
     iOpt = da.nanargmax(args.NSCE_arr)
     args.oC=args.C_arr[iOpt,:]
     args.oRho_c2=args.rho_c2_arr[iOpt]
@@ -590,6 +490,13 @@ def thSeg4(args,ds):
         args.ThPDL=args.ThPD/da.array([5,17])
     probW=dualpol_dist(args,ds.I_pol1,ds.I_pol2)
     waterMask = da.where(probW>args.ThPD,1,0)
+    # Create a direct mask from initial upper bound
+    direct_mask_raw = da.where(da.logical_and((ds.img_lp<=args.I1u), (ds.img_cp<=args.I2u)),1,0).astype(np.uint8)
+    direct_mask = da.where(ds.img_lp>0, direct_mask_raw, 0)
+    setattr(ds, 'direct_mask', direct_mask)
+    # Apply the upper bound here for inverted porobability
+    Wall_mask = da.logical_or(ds.I_pol1>args.I1u,ds.I_pol2>args.I2u)
+    #waterMask = da.where(Wall_mask,0,waterMask)
     High_mask = da.where(ds.img_lp>0, waterMask, 0).astype(np.uint8)    
     setattr(ds, args.bcoutname[0], High_mask)
     mask_profile = args.refmeta
@@ -611,6 +518,9 @@ def thSeg4(args,ds):
         else:
             tmask = probmask
         waterMask= da.logical_or(tmask,da.logical_and(ds.I_pol1<pol1_min, ds.I_pol2<pol2_min))
+        # Apply the upper bound here for inverted porobability
+        # No wall for mod and low?
+        #waterMask = da.where(Wall_mask,0,waterMask)
         waterMask = da.where(ds.img_lp>0, waterMask, 0).astype(np.uint8)  
         setattr(ds, args.bcoutname[idx+1], waterMask)
         mask_profile = args.refmeta

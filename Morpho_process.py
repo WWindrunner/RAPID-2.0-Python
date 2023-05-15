@@ -42,7 +42,7 @@ def Morph_proc(args,ds):
         if args.morpho_seed_type == 'both' or args.morpho_seed_type == 'prob_only':
             rasWBProb = ds.water_occurrence
             #rasWBProb[maskOut] = np.nan
-            rasSeedsProb = rasWBProb >= args.thSeed
+            rasSeedsProb = rasWBProb > 1
             #wopseedmask = da.logical_or(np.isnan(rasSeedsProb), rasSeedsProb<args.thSeed)
             #rasSeedsProb[wopseedmask]=False
         else:
@@ -58,7 +58,7 @@ def Morph_proc(args,ds):
         # step 3: get feature statistic for candidate water bodies
         isWater=da.where(CM>0,1,0)
         if args.morpho_seed_type == 'both' or args.morpho_seed_type == 'prob_only':
-            coincidence_raw=da.logical_and(isWater==1, rasWBProb>0 )
+            coincidence_raw=da.logical_and(isWater==1, rasSeeds)
         else:
             coincidence_raw=da.logical_and(isWater==1, rasSeeds)
         rasurbanLCC_value=da.where(da.isin(LCC, args.nWBClasses),1,0)
@@ -92,12 +92,9 @@ def Morph_proc(args,ds):
     else:
         # step 1: initialize water mask and seeds 
         maskOut = ds.img_lp <= 0
-        rasWB_post_high = ds.High_mask
-        rasWB_post_low = ds.Low_mask
-        rasWB_post_high[maskOut] = 0
-        rasWB_post_low[maskOut] = 0
-        rasWB_pre = ds.pre_mod_mask
-        rasWB_pre[maskOut]=0
+        rasWB_post_high = da.where(maskOut,0,ds.High_mask).astype(np.uint8)
+        rasWB_post_low = da.where(maskOut,0,ds.Low_mask).astype(np.uint8)
+        rasWB_pre = da.where(maskOut,0,ds.pre_mod_mask).astype(np.uint8)
         if args.morpho_seed_type == 'both' or args.morpho_seed_type == 'LCC_only':
             LCC = ds.land_cover
             #LCC[maskOut] = np.nan
@@ -108,12 +105,12 @@ def Morph_proc(args,ds):
         if args.morpho_seed_type == 'both' or args.morpho_seed_type == 'prob_only':
             rasWBProb = ds.water_occurrence
             #rasWBProb[maskOut] = np.nan
-            rasSeedsProb= rasWBProb>= args.thSeed
+            rasSeedsProb= rasWBProb> 1
         else:
             rasSeedsProb = da.zeros(rasWB_post_low.shape, dtype=bool)
         rasSeeds = da.logical_or(rasSeedsProb,rasSeedsLCC)
-        # step 2: find water body bojects with region growth 
-        flood_mask= rasWB_post_low==1
+        # step 2: find water body objects with region growth 
+        flood_mask=da.where(rasWB_post_low==1,True,False)
         #s = ndimage.generate_binary_structure(2,2)
         labeled_flood_mask, num_labels = ndimage.label(flood_mask)
         print('Detected %d water bodies... morph flood part I' % num_labels)
@@ -121,7 +118,7 @@ def Morph_proc(args,ds):
         # step 3: get feature statistic for candidate water bodies
         isWater=da.where(CM>0,1,0)
         if args.morpho_seed_type == 'both' or args.morpho_seed_type == 'prob_only':
-            coincidence_raw=da.logical_and(isWater==1, rasWBProb>0 ).astype(np.uint8)
+            coincidence_raw=da.logical_and(isWater==1, rasSeeds).astype(np.uint8)
         else:
             coincidence_raw=da.logical_and(isWater==1, rasSeeds).astype(np.uint8)
         rasurbanLCC_value=da.where(da.isin(LCC, args.nWBClasses),1,0)
@@ -146,23 +143,23 @@ def Morph_proc(args,ds):
         print('Detected %d water bodies... after morph flood part I' % num_labels_after_pri)
         # Improve change detection
         # step 5: locate change object
-        rasBkg=rasWB_post_low-CM
-        WBDiffHigh=rasWB_post_high-rasWB_pre
-        WBDiffHigh[WBDiffHigh<0]=0
-        labeled_flood_mask_ICD, num_labels_ICD = ndimage.label(WBDiffHigh)
+        rasBkg=rasWB_post_low-morph_mask_raw
+        rasBkg=da.where(rasBkg>0,1,0)
+        flood_mask_2=da.where(rasBkg==1,True,False)
+        labeled_flood_mask_ICD, num_labels_ICD = ndimage.label(flood_mask_2)
         print('Detected %d water bodies... morph flood part II' % num_labels_ICD)
         CM2 = da.from_array(labeled_flood_mask_ICD, chunks=args.chunks)
         # step 6: get feature statistic for ICD
         mask_CM2=da.where(CM2>0,1,0)
         WBDiffLow=mask_CM2-rasWB_pre
-        WBDiffLow[WBDiffHigh<0]=0
+        WBDiffLow=da.where(WBDiffLow>0,1,0)
         if args.morpho_seed_type == 'both' or args.morpho_seed_type == 'prob_only':
-            coincidence=da.logical_and(mask_CM2==1, rasWBProb>0 ).astype(np.uint8)
+            coincidence=da.logical_and(mask_CM2==1, rasWBProb>0)
         else:
-            coincidence=da.logical_and(mask_CM2==1, rasSeeds).astype(np.uint8)
+            coincidence=da.logical_and(mask_CM2==1, rasSeeds)
         rasurbanLCC_value=da.where(da.isin(LCC, args.nWBClasses),1,0)
         coincidence = da.where(coincidence_raw,1,0)
-        ddf = dd.concat([dd.from_dask_array(c) for c in [CM.ravel(),
+        ddf = dd.concat([dd.from_dask_array(c) for c in [CM2.ravel(),
             mask_CM2.ravel(),coincidence.ravel(),WBDiffLow.ravel(),
             rasWB_post_high.ravel(), rasurbanLCC_value.ravel()]], axis = 1)
         ddf.columns = ['CM', 'mask_CM2','coincidence','WBDiffLow','rasWB_post_high','LCC']
@@ -173,14 +170,17 @@ def Morph_proc(args,ds):
         objSumNWB = grouped.LCC.sum()
         objPost = grouped.WBDiffLow.sum()
         objHigh = grouped.rasWB_post_high.sum()
+        obj_rNWB_Org=objSumNWB / objSum
         obj_rInund = objPost / objSum
         obj_rProb = objHigh / objSum
         obj_rNWB = objSumNWB /(objSum-coinSum)
         #import pdb; pdb.set_trace()
         #obj_rNWB [objSum==coinSum] = 0 # just to mask out np.inf, not neccessary.
-        obj_rInund, obj_rProb, objSum, obj_rNWB = dd.compute(obj_rInund, obj_rProb, objSum, obj_rNWB)
+        obj_rInund, obj_rProb, objSum, obj_rNWB,obj_rNWB_Org = dd.compute(obj_rInund, obj_rProb, objSum, obj_rNWB,obj_rNWB_Org)
         # step 7: apply filter rules and get secondary flood morph mask
-        boolean_list_P2 = ( (obj_rInund < args.thInund) | (obj_rInund < args.thInund * obj_rNWB) | (obj_rProb < args.rProb) | (objSum < args.thSize) | (obj_rNWB > args.rNWB_ICD) )
+        boolean_list_P2 = ( (obj_rInund < args.thInund) | (obj_rInund < args.rInund * obj_rNWB) | (obj_rProb < args.rProb) | (objSum < args.thSize) | (obj_rNWB > args.rNWB_ICD) )
+        if args.MODE == 'single':
+            boolean_list_P2 = boolean_list_P2 | ((obj_rNWB > args.rNWB_WST) & (obj_rNWB_Org > args.rNWB_WST_Org))
         morph_mask_raw_M2 = remove_object(boolean_list_P2,objSum,labeled_flood_mask_ICD,CM2)
         morph_mask_raw[morph_mask_raw_M2>0]=2
         _, num_labels_after_P2 = ndimage.label(morph_mask_raw)
