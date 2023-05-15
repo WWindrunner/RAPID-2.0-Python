@@ -203,6 +203,7 @@ def flood_per_pre_save(savepath_RGBfile,mask_profile,floodarr,woparr,LCCarr,prea
     band = ds.GetRasterBand(1)
     colors = gdal.ColorTable()
     Valuerange = [1,2,3,4]
+    # legend for persistent water, pre-flood water, flood water, river ice
     palette = [[0, 92, 230],[0, 197, 255],[219, 0, 0],[255, 215, 0]]
     for idx,i in enumerate(Valuerange):
         colors.SetColorEntry(i, tuple(palette[idx]))
@@ -213,6 +214,10 @@ def flood_per_pre_save(savepath_RGBfile,mask_profile,floodarr,woparr,LCCarr,prea
     del band, ds
 
 def quick_look(output):
+    '''
+    Generate quick look for flood extent, pre-flood water, persistent water, and river ice
+    palette = [[0, 92, 230],[0, 197, 255],[219, 0, 0],[255, 215, 0]]
+    '''
     output = composition(output)
     flood_arr,dry_arr,dire_arr,WOP_arr,LCC_arr,valid_mask = purge2array(output)
     Dirout = os.path.split(output[0][0].dirOut)[0]
@@ -236,3 +241,4 @@ def quick_look(output):
         png_look(flood_arr,dry_arr,None,WOP_arr,LCC_arr,Dirout,fname,src,valid_mask)
     shutil.copyfile(output[0][0].fileOutCompensate,os.path.join(Dirout,'RAPID_raw_'+fname+'.tif'))
     return out_filepath
+        
