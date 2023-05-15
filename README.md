@@ -23,7 +23,7 @@ This will run RAPID with the input parameters that specified in <PATH_JSON>.
 
 ### 2.2 config.json
 Specify the mode, input files, and output folder in .json file.
-* "OUT_PATH": Folder path for output results:
+* "OUT_PATH": Folder path for output.
 * "MODE": RAPID working mode.
   * * (1) 'single': Single image mode, for cases with only one in-event image.
   * * (2) 'normal': Normal mode with one in-event image and one or multiple pre-event images(i.e., dry reference).
@@ -63,10 +63,9 @@ python -u RAPID.py ./config.json
 6. Folder named by <granuele_name>: Contain intermediate result files.
 
 ### 3.2 Legend for RGB tif
-{
-0 92 230 Persistent water
-0 197 255 Pre-event water
-219 0 0 Flood water
+{0 92 230 Persistent water<br>
+0 197 255 Pre-event water<br>
+219 0 0 Flood water<br>
 255 215 0 River ice
 }
 

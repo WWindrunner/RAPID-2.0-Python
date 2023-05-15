@@ -101,14 +101,14 @@ def parse(config_json=None):
             setattr(args, arg, loaded_args[arg])
     return args
 
-def dup_args(args, filepath,wotif=None):
+def dup_args(args, filepath, granuele_name, wotif=None):
     '''
     Duplicate the arguments for each input SAR image (dual-pol)
     '''
     args_new = argparse.Namespace(**vars(args))
     args_new.filepath = filepath
     args_new.wotif = wotif
-    args_new.dirOut = os.path.join(args_new.WORK_PATH, os.path.splitext(args.filepath_list[0][0].split('/')[-1])[0])
+    args_new.dirOut = os.path.join(args_new.WORK_PATH, granuele_name)
     args_new.fileSampleMap=os.path.join(args_new.dirOut,'SampleMap.tif') #intermedian result, not used for now
     args_new.logFile=os.path.join(args_new.dirOut,'sta_log.csv')
     os.makedirs(args_new.dirOut, exist_ok = True)
@@ -132,7 +132,7 @@ def RAPID(*args, **kwargs):
     elif len(args) == 1:
         # input geojson file
         # mode and dry referen should be specified in config file
-        config_file = [args[0]]
+        config_file = args[0]
         if not os.path.exists(config_file):
             raise ValueError(f"{config_file} does not exist!")
         args = parse(config_file)
@@ -156,11 +156,15 @@ def RAPID(*args, **kwargs):
     #Initial args list for each image
     args_list = []
     for idx,filepath in enumerate(filepath_list):
-        args1 = dup_args(args, filepath, wotif=None)
+        # set granule name
         if len(filepath_list) == len(args.granules):
-            args1.granules = args.granules[idx]
+            granuele_name = args.granules[idx]
+            args1 = dup_args(args, filepath, granuele_name, wotif=None)
+            args1.granules = granuele_name
         else:
-            args1.granules = os.path.splitext(filepath[0].split('/')[-1])[0]
+            granuele_name = os.path.splitext(filepath[0].split('/')[-1])[0]
+            args1 = dup_args(args, filepath, granuele_name, wotif=None)
+            args1.granules = granuele_name
         args_list.append(args1)
     # set flood image
     args_list[0].floodimage = True
