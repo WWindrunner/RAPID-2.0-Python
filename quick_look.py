@@ -149,10 +149,10 @@ def png_look(flood_arr,dry_arr,dire_arr,WOP_arr,LCC_arr,Dirout,fname,src,valid_m
     arr_quicklook = LCC_arr.copy()
     mask_pw = np.logical_or(WOP_arr>=25, LCC_arr==60)
     arr_quicklook[mask_pw]=60
-    Mask_flood = np.logical_and( flood_arr==1,np.logical_and(LCC_arr!=50, arr_quicklook!=60))
+    Mask_flood = np.logical_and( flood_arr==1,arr_quicklook!=60)
     arr_quicklook[Mask_flood] = 120
     if dry_arr is not None:
-        Mask_prefloodwater = np.logical_and(dry_arr==1, np.logical_and(LCC_arr!=50,LCC_arr!=60))
+        Mask_prefloodwater = np.logical_and(dry_arr==1, LCC_arr!=60)
         arr_quicklook[Mask_prefloodwater] = 110
         fname = '3classes_' + fname
     else:
