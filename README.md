@@ -1,6 +1,46 @@
-## Updated on May-15-2023: Adaptive Initialization (AdaI)
+## v1.1.3, Aug-06-2023.
+### Major update:
 
-# RAPID
+1. Enable the input of single polarization.
+2. Add option for incidence angle file input, set incidence angle normalization as prefer choise.
+3. Force the mode to 'single' if only one image is provided.
+4. AdaI internal bug fix.
+5. Adjust the persistent water threshold from 25% to 75% for output RGB files.
+
+### Flexible input format:
+1. Command line input: 
+
+Incidence angle file should contains 'inc' or 'INC' in the file name.
+
+Simply keep the <Output_Folder> in the end, and other input files can be in any order. For example:
+
+```
+python -u RAPID.py '<Input_SAR_Pol1>' '<Input_SAR_Pol2>' '<Input_SAR_inc>' <Output_Folder>
+```
+```
+python -u RAPID.py '<Input_SAR_inc>' '<Input_SAR_Pol1>' '<Input_SAR_Pol2>' <Output_Folder>
+```
+```
+python -u RAPID.py '<Input_SAR_inc>' '<Input_SAR_Pol1>' <Output_Folder>
+```
+
+All the above commands will work, and will enable a single image mode.
+
+2. "filepath_list" in config.json:
+
+Similar to 1., the following input format is also valid:
+
+* * [["file1_pol1","file1_pol2","file1_inc"],[...],...]
+or
+* * [["file1_inc","file1_pol1","file1_pol2"],[...],...]
+or
+* * [["file1_inc","file1_pol1"]]
+
+Again, the last one will enable a single image mode, regardless the option in "MODE".
+
+## v1.1.0. Updated on May-15-2023: Adaptive Initialization (AdaI)
+
+# v1.0.0 RAPID
 RAPID python version.<br>
 Please note that the code is under development, so performance is not guaranteed.
 

@@ -31,10 +31,10 @@ def mosaic_pre(output):
     Since we are not directly implementing change detection in terms of backscattering values, 
     the dry and flood images do not need to be in the same geoextent.
     '''
-    if len(output)==1 and output[0][0].MODE == 'normal':
-        output[0][0].floodimage = False
-        print('No dry images, consider changing the mode to single!')
-    elif len(output)==1 or output[0][0].MODE == 'single':
+    #if len(output)==1 and output[0][0].MODE == 'normal':
+    #    output[0][0].floodimage = False
+    #    print('No dry images, consider changing the mode to single!')
+    if len(output)==1 or output[0][0].MODE == 'single':
         output[0][1].pre_mod_mask = da.where(output[0][1].water_occurrence>50,1,0)
         print('Single flood image mode, build pre-event water with ESA water occurrence >50')
     else:

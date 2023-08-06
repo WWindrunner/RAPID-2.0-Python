@@ -3,6 +3,18 @@ import numpy as np
 from sklearn.mixture import GaussianMixture
 import dask
 import dask.array as da
+from skimage.filters import threshold_otsu
+
+def select_water_tiles_buffer(tiles: Union[np.ndarray, np.ma.MaskedArray],
+                      hand_threshold: float, hand_fraction: list) -> np.ndarray:
+    if np.allclose(tiles, 0.0):
+        return []
+    tile_indexes = np.arange(tiles.shape[0])
+    if np.count_nonzero(tiles>=hand_threshold) == 0:
+        return []
+    else:
+        percent_valid_pixels = np.sum(tiles, axis=(1, 2)) / (tiles.shape[1] * tiles.shape[2])
+        return tile_indexes[(percent_valid_pixels >= hand_fraction[0]) & (percent_valid_pixels <= hand_fraction[1])]
 
 def select_water_tiles(tiles: Union[np.ndarray, np.ma.MaskedArray],
                       hand_threshold: float, hand_fraction: list) -> np.ndarray:
@@ -93,6 +105,18 @@ def tile_array(array: Union[np.ndarray, np.ma.MaskedArray], tile_shape: Tuple[in
     tiled = np.moveaxis(dstack(tile_list), -1, 0)
 
     return tiled
+
+def determine_em_threshold_Otsu(tiles: np.ndarray, scaling: float) -> float:
+    thresholds = []
+    for ii in range(tiles.shape[0]):
+        test_tile = (np.around(tiles[ii, :, :] * scaling)).astype(int)
+        thresholds.append(thre_otsu(test_tile) / scaling)
+        #np.median(np.sort(thresholds)) np.max(np.sort(thresholds)) np.percentile(thresholds,25)
+    return np.median(thresholds)
+
+def thre_otsu(tile):
+    threshold = threshold_otsu(tile)
+    return threshold
 
 def determine_em_threshold(tiles: np.ndarray, scaling: float) -> float:
     thresholds = []
@@ -294,7 +318,7 @@ def select_tiles(backscatter_tiles: np.ndarray, hand_candidates: np.ndarray, low
         potential_candidates = np.intersect1d(hand_candidates, low_mean_candidates)
     else:
         potential_candidates = np.intersect1d(hand_candidates, tile_indexes)
-    for variance_threshold in np.nanpercentile(tile_variance_water.filled(np.nan), np.arange(50, 96)[::-1]):
+    for variance_threshold in np.nanpercentile(tile_variance_water.filled(np.nan), np.arange(5, 25)[::-1]):
         variance_candidates = tile_indexes[tile_variance > variance_threshold]
         selected = np.intersect1d(variance_candidates, potential_candidates)
         if len(selected)>=5:
@@ -316,7 +340,7 @@ def bimodal_tiles(tiles):
     return dask.compute(*pass_index)
         
 @dask.delayed
-def bimodal_test(arr):
+def bimodal_test_ori(arr):
     '''
     Test if a 2D array is bimodal distribution using a Gaussian Mixture Model and the weights of the two components
     '''
@@ -327,3 +351,37 @@ def bimodal_test(arr):
         return True
     else:
         return False
+
+@dask.delayed
+def bimodal_test(arr):
+    '''
+    Test if a 2D array is bimodal distribution using a Gaussian Mixture Model,
+    the weights of the two components, and the Ashman D (AD) coefficient threshold of >2 for bimodality.
+    '''
+    gmm = GaussianMixture(n_components=2)
+    gmm.fit(arr.reshape(-1, 1))
+    weights = gmm.weights_
+    means = gmm.means_.flatten()
+    stds = np.sqrt(gmm.covariances_).flatten()
+    ad_coefficient = compute_ad(means, stds)
+    
+    # Perform Otsu thresholding on the array
+    threshold = threshold_otsu(arr)
+    
+    # Check if the histogram value at the threshold is less than 0.2 of the peak value
+    hist_peak = np.max(np.histogram(arr, bins='auto')[0])
+    hist_value_at_threshold = np.histogram(arr, bins='auto')[0][int(np.digitize(threshold, np.histogram(arr, bins='auto')[1]))]
+    
+    if np.all(weights > 0.3) and np.all(weights < 0.7) and ad_coefficient > 1.5 and hist_value_at_threshold <= 0.3 * hist_peak:
+        return True
+    else:
+        return False
+
+def compute_ad(means, stds):
+    '''
+    Compute the Ashman D (AD) coefficient using the means and standard deviations of the Gaussian components.
+    '''
+    delta_mean = means[0] - means[1]
+    std_sum = stds[0]**2 + stds[1]**2
+    ad_coefficient = delta_mean / np.sqrt(0.5 * std_sum)
+    return ad_coefficient

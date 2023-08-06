@@ -100,8 +100,14 @@ def filepathreader(ds,varnames, infilepath, chunks):
             for idx, name in enumerate(varnames):
                 setattr(ds, name, da.from_array(src.read(idx+1), chunks=chunks))
     else:
+        varnames = ['img_lp', 'img_cp']
+        pol_index = 0
         for idx, filename in enumerate(infilepath):
-            setattr(ds, varnames[idx], readfileio(filename, chunks))
+            if 'inc' in infilepath[idx] or 'INC' in infilepath[idx]:
+                setattr(ds, 'inc', readfileio(filename, chunks))
+            else:
+                setattr(ds, varnames[pol_index], readfileio(filename, chunks))
+                pol_index += 1
             if 'amp' in infilepath[idx] or 'AMP' in infilepath[idx]:
                     print(f"Transfer to sigmma: {infilepath[idx]}")
                     setattr(ds, varnames[idx], tosigmma(getattr(ds, varnames[idx])))
@@ -172,8 +178,16 @@ def Load_Data(args):
     args.refmeta = args.ref_src.meta.copy()
     # Output are binary mask so just one band
     args.refmeta.update(count=1)
+    # Duplicate ds.img_lp to ds.img_cp if ds.img_cp is not exist, 08-05-2023
+    if not hasattr(ds, 'img_cp'):
+        ds.img_cp = ds.img_lp.copy()
+        args.dual_pol = False
+        print('Single-pol SAR input!')
+    else:
+        args.dual_pol = True
+    #
     ds = set_nan(ds,args)
-    #ds = normalize_inc(ds)
+    ds = normalize_inc(ds)
     if args.MODE != 'desert': # No ancillary data is needed in the desert mode.
         # water occurrence file
         if wotif==None:

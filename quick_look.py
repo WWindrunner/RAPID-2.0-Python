@@ -147,7 +147,7 @@ def RAPID_quicklookshow(savepath, arr_list, \
 
 def png_look(flood_arr,dry_arr,dire_arr,WOP_arr,LCC_arr,Dirout,fname,src,valid_mask):
     arr_quicklook = LCC_arr.copy()
-    mask_pw = np.logical_or(WOP_arr>=25, LCC_arr==60)
+    mask_pw = np.logical_or(WOP_arr>=75, LCC_arr==60)
     arr_quicklook[mask_pw]=60
     Mask_flood = np.logical_and( flood_arr==1,arr_quicklook!=60)
     arr_quicklook[Mask_flood] = 120
@@ -182,7 +182,7 @@ def png_look(flood_arr,dry_arr,dire_arr,WOP_arr,LCC_arr,Dirout,fname,src,valid_m
 
 def flood_per_pre_save(savepath_RGBfile,mask_profile,floodarr,woparr,LCCarr,prearr,liquidarr,valid_mask):
     output_arr = floodarr.copy()
-    mask_pw = np.logical_or(woparr>=25, LCCarr==60)
+    mask_pw = np.logical_or(woparr>=75, LCCarr==60)
     floodmask = np.logical_and(floodarr==1,~np.logical_or(mask_pw,prearr==1))
     output_arr[floodmask]=3
     if prearr is not None:

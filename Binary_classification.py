@@ -84,6 +84,19 @@ def getgrids(args):
     hhgrid = da.linspace(minHH, maxHH, args.nInter)
     return dual_pol, hhgrid, hvgrid, deltaHH, deltaHV
 
+def singlepol_dist(args,HH):
+    '''
+    Compute the single-pol distribution
+    using the chi2 distribution function
+    input with ENL, mean of the single-pol and the sampling of the single-pol
+    '''
+    C, ENL = args.C[0],args.ENL
+    NI2 = 2*ENL*HH/C
+    PDF = chi2.pdf(NI2, 2*ENL)
+    PDF = PDF*2*ENL/C
+    PDF = da.from_array(PDF)
+    return PDF
+
 def dualpol_dist(args,HH,HV):
     ''' Compute the joint probability of HH and HV
     Using the dual-pol distribution function
@@ -133,10 +146,10 @@ def FindMinPD(args, PD, deltaHH, deltaHV=None):
 
 def getHist(args,ds):
     ''' Get the histogram of polarizations'''
-    dual_pol, hhgrid, hvgrid, deltaHH, deltaHV = getgrids(args)
-    if dual_pol:
-        inter_basinMask = da.logical_and(da.logical_and(ds.I_pol1>args.pol1_min, ds.I_pol2>args.pol2_min), da.logical_and(ds.I_pol1<args.pol1_max, ds.I_pol2<args.pol2_max))
-        basinMask = da.logical_and(inter_basinMask,~ds.isWater)
+    _, hhgrid, hvgrid, deltaHH, deltaHV = getgrids(args)
+    inter_basinMask = da.logical_and(da.logical_and(ds.I_pol1>args.pol1_min, ds.I_pol2>args.pol2_min), da.logical_and(ds.I_pol1<args.pol1_max, ds.I_pol2<args.pol2_max))
+    basinMask = da.logical_and(inter_basinMask,~ds.isWater)
+    if args.dual_pol:
         jointProbP=dualpol_dist(args,da.where(basinMask,ds.I_pol1,np.nan),da.where(basinMask,ds.I_pol2,np.nan))
         maskP = jointProbP>args.thPD
         maskall = da.logical_or(maskP,ds.isWater)
@@ -146,24 +159,33 @@ def getHist(args,ds):
         t_histImage,_,_ = np.histogram2d(t_pol1_water, t_pol2_water, bins=(args.nInter,args.nInter), range=(((hhgrid[0]-0.5*deltaHH).compute(),(hhgrid[-1]+0.5*deltaHH).compute()),((hvgrid[0]-0.5*deltaHV).compute(),(hvgrid[-1]+0.5*deltaHV).compute())))
         nSamples = da.count_nonzero(maskall==True)
     else:
-        thI = chi2.ppf(args.thProb, df=2*args.ENL) * args.C / (2*args.ENL)
+        thI = chi2.ppf(args.thProb, df=2*args.ENL) * args.C[0] / (2*args.ENL)
+        maskP = da.where(basinMask,ds.I_pol1,np.nan) < thI
+        maskall = da.logical_or(maskP,ds.isWater)
+        t_pol1_water = ds.I_pol1[maskall]
+        t_histImage,_ = np.histogram(t_pol1_water, bins=args.nInter, range=((hhgrid[0]-0.5*deltaHH).compute(),(hhgrid[-1]+0.5*deltaHH).compute()))
+        nSamples = da.count_nonzero(maskall==True)
     return t_histImage,nSamples
 
 def getNSCE(args, ds, thPD=None):
     ''' Get the normalized sample covariance error (NSCE) of two distribution.'''
-    dual_pol, hhgrid, hvgrid, deltaHH, deltaHV = getgrids(args)
-    if dual_pol:
+    _, hhgrid, hvgrid, deltaHH, deltaHV = getgrids(args)
+    if args.dual_pol:
         HV,HH = da.meshgrid(hvgrid, hhgrid)
         jointProb = dualpol_dist(args,HH,HV)
         if thPD==None:
             args.thPD = FindMinPD(args,jointProb,deltaHH,deltaHV)
             if args.ini_thPD is None:
                 args.ini_thPD = args.thPD
-        else:
-            args.thPD = thPD
-        histImage,nSamples = getHist(args,ds)
-    if dual_pol:
+    else:
+        jointProb = singlepol_dist(args,hhgrid)
+        if thPD==None:
+            args.thPD = FindMinPD(args,jointProb,deltaHH)
+    histImage,nSamples = getHist(args,ds)
+    if args.dual_pol:
         probReal=histImage/(deltaHH*deltaHV)/nSamples
+    else:
+        probReal=histImage/deltaHH/nSamples
     probmask = da.where(jointProb>args.thPD,True,False)
     probReal_np = probReal[probmask]
     jointProb_np = jointProb[probmask]
@@ -174,17 +196,29 @@ def getNSCE(args, ds, thPD=None):
         isErr= rReal - da.where(rWishart > args.th_grid_ratio, rWishart,np.nan)
         if da.nansum(isErr)/jointProb[jointProb>300].sum()>0.1:
             args.PDFContaminated=True
+            print('PDF contaminated!')
         else:
             args.PDFContaminated=False
     return args
 
 def wishartStats(args,I1,I2,nargout=3):
-    ''' Calculate the Wishart statistics of two polarizations.'''
-    ''' C: mean of two polarizations (water pixels)'''
-    ''' rho_c2: correlation coefficient of two polarizations'''
+    ''' Calculate the Wishart statistics of dual- or single- polarization.'''
+    ''' C: mean of polarizations (water pixels)'''
+    ''' rho_c2: correlation coefficient of polarizations'''
     ''' The range of I1 and I2 are derived optimization steps.'''
-    args.C = da.array([da.mean(I1), da.mean(I2)]).compute()
-    args.rho_c2= ((da.mean(I1*I2)-(args.C[0]*args.C[1]))/(da.nanstd(I1)*da.nanstd(I2))).compute()
+    if args.dual_pol:
+        args.C = da.array([da.mean(I1), da.mean(I2)]).compute()
+        args.rho_c2= ((da.mean(I1*I2)-(args.C[0]*args.C[1]))/(da.nanstd(I1)*da.nanstd(I2))).compute()
+    else:
+        I1_mean = da.mean(I1).compute()
+        args.C = da.array([I1_mean,I1_mean]).compute()
+        args.rho_c2=0.1
+    #rho_c2 = 0.5
+    if args.rho_c2 < 0.1:
+        args.rho_c2 = 0.1
+    # for single pol case, rho_c2 is set to minimum.
+    if args.rho_c2 > 0.95:
+        args.rho_c2 = 0.3
     if args.rho_c2<0:
         args.rho_c2=1e-3
     if nargout==3:
@@ -203,35 +237,52 @@ def wishartStats(args,I1,I2,nargout=3):
     return args
 
 def polsar_func3(args,ds):
-    '''Calculate the Wishart statistics for dual-polarization SAR image/swath.
+    '''
+    Calculate the Wishart statistics for dual-polarization or single-polarization SAR image/swath.
     Two distributions are compared: the theoretical and the empirical distribution of the input image.
     input: args, ds
     function prameters: args.C, args.rho_C2, args.maxI, args.minI. Which are the mean, the correlation coefficient, the maximum and the minimum backscattering intensity of water bodies from initial guess.
     control prameter: args.thProb. The threshold probability for the Wishart distribution.
     key functions: dualpol_dist FindMinPD.
     '''
-    dual_pol, hhgrid, hvgrid, deltaHH, deltaHV = getgrids(args)
-    if dual_pol:
+    _, hhgrid, hvgrid, deltaHH, deltaHV = getgrids(args)
+    if args.dual_pol:
         HV,HH = da.meshgrid(hvgrid, hhgrid)
         jointProb = dualpol_dist(args,HH,HV)
         args.thPD = FindMinPD(args,jointProb,deltaHH,deltaHV)
-    #mask = da.where(jointProb>=args.thPD, True, False)
-    mask = jointProb>=args.thPD
-    I1, I2, jointProb = HH[mask], HV[mask], jointProb[mask]
-    args.tC = da.array([(I1*jointProb).sum()*deltaHH*deltaHV,(I2*jointProb).sum()*deltaHH*deltaHV]).compute()
-    I1, I2, jointProb=None,None,None
-    if args.bExport:
-        args,ds = importDtSrc(args,ds)
-        args.bExport = False
-    jointProbP=dualpol_dist(args,ds.jointProb_I_pol1,ds.jointProb_I_pol2)
-    #have to include the persistent water pixels
-    maskP_water = da.logical_or(jointProbP>args.thPD, ds.isWater)
-    t_pol1_water = ds.I_pol1[maskP_water]
-    #t_pol2_water = da.where(da.logical_or(maskP,ds.isWater), ds.I_pol2, np.nan)
-    t_pol2_water = ds.I_pol2[maskP_water]
-    args=wishartStats(args,t_pol1_water,t_pol2_water,2)
-    args.f=args.tC-args.C
-    args.f0=args.tC
+        #mask = da.where(jointProb>=args.thPD, True, False)
+        mask = jointProb>=args.thPD
+        I1, I2, jointProb = HH[mask], HV[mask], jointProb[mask]
+        args.tC = da.array([(I1*jointProb).sum()*deltaHH*deltaHV,(I2*jointProb).sum()*deltaHH*deltaHV]).compute()
+        I1, I2, jointProb=None,None,None
+        if args.bExport:
+            args,ds = importDtSrc(args,ds)
+            args.bExport = False
+        jointProbP=dualpol_dist(args,ds.jointProb_I_pol1,ds.jointProb_I_pol2)
+        #have to include the persistent water pixels
+        maskP_water = da.logical_or(jointProbP>args.thPD, ds.isWater)
+        t_pol1_water = ds.I_pol1[maskP_water]
+        #t_pol2_water = da.where(da.logical_or(maskP,ds.isWater), ds.I_pol2, np.nan)
+        t_pol2_water = ds.I_pol2[maskP_water]
+        args=wishartStats(args,t_pol1_water,t_pol2_water,2)
+        args.f=args.tC-args.C
+        args.f0=args.tC
+    else:
+        PDF = singlepol_dist(args,hhgrid)
+        args.thPD = FindMinPD(args,PDF,deltaHH)
+        mask = PDF>=args.thPD
+        I1, PDF = hhgrid[mask], PDF[mask]
+        tC = (I1*PDF).sum()*deltaHH
+        args.tC = da.array([tC,tC]).compute()
+        if args.bExport:
+            args,ds = importDtSrc(args,ds)
+            args.bExport = False
+        prob = singlepol_dist(args,ds.jointProb_I_pol1)
+        maskP_water = da.logical_or(prob>args.thPD, ds.isWater)
+        t_pol1_water = ds.I_pol1[maskP_water]
+        args=wishartStats(args,t_pol1_water,t_pol1_water,2)
+        args.f=args.tC-args.C
+        args.f0=args.tC
     return args
 
 @tim
@@ -280,7 +331,7 @@ def findCenter3(args,ds):
         args.C0 = args.C * float('inf')
         print('Th=%.4f: iteration-' % args.thProb)
         err=abs((args.C-args.C0)/args.C)
-        tol_dual, tol_single = 1e-2, 2e-2
+        tol_dual, tol_single = 2e-2, 2e-2
         #if not os.path.exists(file2):
         #tol_raw = tol_dual
         tol=tol_dual
@@ -297,7 +348,7 @@ def findCenter3(args,ds):
             #err = np.sqrt(np.sum((args.C-args.C0)**2))/np.sqrt(np.sum(args.C0**2))
             print('iter=%d, error=%.8f' % (args.it, da.max(err)))
             #print(np.abs(args.COrg-args.C)/args.COrg)
-            if args.it>50:
+            if args.it>15:
                 tol = 1e6
             #tol = (args.it // 3 + 1)*tol_raw
             #print(f'tol {tol}')
@@ -483,12 +534,14 @@ def thSeg4(args,ds):
     if isinstance(args.ThPD, da.Array):
         args.ThPD = args.ThPD.compute()
     print('C: ', args.C, 'rho_c2: ', args.rho_c2, 'ThPD: ', args.ThPD)
-    dual_pol, hhgrid, hvgrid, deltaHH, deltaHV = getgrids(args)
-    if dual_pol:
+    if args.ThPD == np.nan:
+        args.ThPD = 300
+    if args.dual_pol:
         args.ThPDL=args.ThPD/da.array([30,300])
+        probW=dualpol_dist(args,ds.I_pol1,ds.I_pol2)
     else:
         args.ThPDL=args.ThPD/da.array([5,17])
-    probW=dualpol_dist(args,ds.I_pol1,ds.I_pol2)
+        probW = singlepol_dist(args,ds.I_pol1)
     waterMask = da.where(probW>args.ThPD,1,0)
     # Create a direct mask from initial upper bound
     direct_mask_raw = da.where(da.logical_and((ds.img_lp<=args.I1u), (ds.img_cp<=args.I2u)),1,0).astype(np.uint8)

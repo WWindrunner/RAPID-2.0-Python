@@ -6,6 +6,7 @@ from utils import *
 from scipy.stats.distributions import chi2
 from EM_threshold import *
 from scipy.ndimage import median_filter
+from scipy import ndimage
 
 def to_db(arr):
     result = 10 * da.log10(arr)
@@ -40,10 +41,10 @@ def tile_EM(tiles,hand_candidates):
     '''
     Thresholding from tiles using Expectation Maximization
     '''
-    selected_tiles = select_backscatter_tiles(tiles, hand_candidates)
+    selected_tiles = select_backscatter_tiles(tiles, hand_candidates,True)
     tiles = np.log10(tiles) + 30. 
     scaling = 256 / (np.mean(tiles) + 3 * np.std(tiles))
-    gaussian_threshold = determine_em_threshold(tiles[selected_tiles, :, :], scaling)
+    gaussian_threshold = determine_em_threshold_Otsu(tiles[selected_tiles, :, :], scaling)
     threshold_db = 10. * (gaussian_threshold - 30.)
     return threshold_db
 
@@ -54,7 +55,7 @@ def tile_EM_withselect(tiles,selected_tiles):
     '''
     tiles = np.log10(tiles) + 30. 
     scaling = 256 / (np.mean(tiles) + 3 * np.std(tiles))
-    gaussian_threshold = determine_em_threshold(tiles[selected_tiles, :, :], scaling)
+    gaussian_threshold = determine_em_threshold_Otsu(tiles[selected_tiles, :, :], scaling)
     threshold_db = 10. * (gaussian_threshold - 30.)
     return threshold_db
 
@@ -82,9 +83,15 @@ def bound_adj(I_PW, threshold_db, ENL, maxP, minP):
     avai_I = I_PW_chi2[(I_PW_chi2<Iu) & (I_PW_chi2>Id)]
     ENLa = np.mean(avai_I)**2/np.var(avai_I)
     return Iu,Id,ENLa
+
+def PW_buffer(WO_mask,thre_PW,tile_shape=(80,80)):
+    bu_size = int(tile_shape[0]//10)
+    PW_mask = np.where(WO_mask>=thre_PW,1,0)
+    buffer_mask = ndimage.binary_dilation(PW_mask, iterations=bu_size)
+    return buffer_mask
     
 @tim
-def findRange_EM(I_raw,wo_raw,thProbSeeds,ENL,PW_ratio = [0.2,0.6],nodata=0,tile_shape = (80,80), max_db_threshold=0.0,
+def findRange_EM(I_raw,wo_raw,thProbSeeds,ENL,PW_ratio = [0.1,0.6],nodata=0,tile_shape = (80,80), max_db_threshold=100.0,
                  maxP = 0.99, minP = 0.0001, max_arr = 0.1, min_arr = 0.001, L_water_tiles = 15):
     '''
     New version of findRange, which achive the Adaptive Initialization of Liquid water.
@@ -101,27 +108,42 @@ def findRange_EM(I_raw,wo_raw,thProbSeeds,ENL,PW_ratio = [0.2,0.6],nodata=0,tile
     array_wo = np.where(I>min_arr, wo, 0)
     thProbSeeds = thProbSeeds + 2
     threshold_db = None
+    array_tseed = None
     selected_tiles = []
+    hand_tiles = tile_array_overlap(array_wo, tile_shape=tile_shape, pad_value=np.nan)
     while threshold_db == None and thProbSeeds >= 2:
         thProbSeeds = thProbSeeds - 2
         if thProbSeeds <= 0:
             thProbSeeds = 1
-        hand_tiles = tile_array_overlap(array_wo, tile_shape=tile_shape, pad_value=np.nan)
+        PW_bu_area = PW_buffer(wo,thProbSeeds,tile_shape=(80,80))
+        #hand_buffer_tiles = tile_array_overlap(PW_bu_area, tile_shape=tile_shape, pad_value=np.nan)
+        #hand_candidates = select_water_tiles_buffer(hand_buffer_tiles, thProbSeeds, PW_ratio)
         hand_candidates = select_water_tiles(hand_tiles, thProbSeeds, PW_ratio)
         if len(hand_candidates) >= L_water_tiles:
-            array_tseed = np.ma.masked_where(wo<thProbSeeds, array)
+            #PW_bu_area = PW_buffer(wo,thProbSeeds,tile_shape=(80,80))
+            array_tseed = np.ma.masked_where(PW_bu_area == 0, array)
+            #array_tseed = np.ma.masked_where(wo<thProbSeeds, array)
             tiles = tile_array_overlap(array_tseed, tile_shape=tile_shape, pad_value=np.nan)
             tiles = np.ma.masked_less_equal(tiles, min_arr)
-            selected_tiles = select_tiles(tiles, hand_candidates,lower_median=True)
+            selected_tiles = select_tiles(tiles, hand_candidates,lower_median=False)
             if len(selected_tiles) >= 5:
                 threshold_db = tile_EM_withselect(tiles,selected_tiles)
     print(f'Found {len(selected_tiles)} water tiles at Persistent Water Seeds = {thProbSeeds}')
     I_PW = I[(wo>=thProbSeeds) & (I>min_arr)]
-    array = np.ma.masked_where(wo<thProbSeeds, array)
+    #if array_tseed is None:
+    #    PW_bu_area = PW_buffer(wo,thProbSeeds,tile_shape=(80,80))
+    #    array_tseed = np.ma.masked_where(PW_bu_area == 0, array)
+    #    array = array_tseed
+    #else:
+    #    array = array_tseed
+    #overall tiles
     tiles = tile_array(array, tile_shape=tile_shape, pad_value=np.nan)
     tiles = np.ma.masked_less_equal(tiles, min_arr)
     #tiles = np.ma.masked_greater_equal(tiles, max_arr)
     back_up_threshold = tile_EM(tiles,np.arange(tiles.shape[0]))
+    if back_up_threshold > max_db_threshold:
+        print(f'Back up too high! Using maximum threshold {max_db_threshold} db')
+        back_up_threshold = max_db_threshold
     back_up_Iu, back_up_Id, back_up_ENLa = bound_adj(I_PW, back_up_threshold, ENL, maxP, minP)
     if threshold_db is not None:
         print(f'Main upbound {threshold_db} db, back up upbound {back_up_threshold} db')
@@ -135,7 +157,7 @@ def findRange_EM(I_raw,wo_raw,thProbSeeds,ENL,PW_ratio = [0.2,0.6],nodata=0,tile
         print(f'Can not initiliaze the main bounds, Using back up threshold {back_up_threshold} db')
         Iu,Id,ENLa = back_up_Iu, back_up_Id, back_up_ENLa
     print(f'Iu: {Iu}, Id: {Id}, ENLa: {ENLa}, back up Iu: {back_up_Iu}, back up Id: {back_up_Id}, back up ENLa: {back_up_ENLa}')
-    return Iu,Id,ENLa,thProbSeeds,back_up_Iu, back_up_Id, back_up_ENLa
+    return Iu,Id,ENLa,thProbSeeds,back_up_Iu, back_up_Id, back_up_ENLa, PW_bu_area
 
 @tim
 def findRange(I,ENL = 4.9, minOut = 1e-9, maxPrc = 90, maxP = 0.99, minP = 0.0001):
@@ -194,12 +216,16 @@ def GetStatisticsFrmSample(args, ds):
     '''Get the statistics from the persistent water pixel sample.'''
     ENL = args.ENL 
     thProbSeeds=args.thSeed
-    pol1_max,pol1_min,n1,thPseedn1,back_pol1_max, back_up_pol1_min, back_up_n1 = findRange_EM(ds.img_lp, ds.water_occurrence, thProbSeeds, \
-                                                  ENL,max_db_threshold=-2, \
+    pol1_max,pol1_min,n1,thPseedn1,back_pol1_max, back_up_pol1_min, back_up_n1,PW_bu_area_pol1 = findRange_EM(ds.img_lp, ds.water_occurrence, thProbSeeds, \
+                                                  ENL,max_db_threshold=100, \
                                                     max_arr = 0.1, min_arr = 1e-6)
-    pol2_max,pol2_min,n2,thPseedn2, back_pol2_max, back_up_pol2_min, back_up_n2 = findRange_EM(ds.img_cp, ds.water_occurrence, \
-                                                  thProbSeeds, ENL,max_db_threshold=-10, \
-                                                    max_arr = 0.01, min_arr = 1e-6)
+    if args.dual_pol:
+        pol2_max,pol2_min,n2,thPseedn2, back_pol2_max, back_up_pol2_min, back_up_n2, PW_bu_area_pol2 = findRange_EM(ds.img_cp, ds.water_occurrence, \
+                                                    thProbSeeds, ENL,max_db_threshold=100, \
+                                                        max_arr = 0.01, min_arr = 1e-6)
+    else:
+        pol2_max,pol2_min,n2,thPseedn2, back_pol2_max, back_up_pol2_min, back_up_n2, PW_bu_area_pol2 = pol1_max,pol1_min,n1,thPseedn1, back_pol1_max, back_up_pol1_min, back_up_n1, PW_bu_area_pol1
+        args.dual_pol = True
     thProbSeeds = (thPseedn1+thPseedn2)/2
     nNew=((n1+n2)/2)
     print(f'New:{nNew}, Ori:{ENL}, for {args.filepath[0]}')
@@ -209,20 +235,28 @@ def GetStatisticsFrmSample(args, ds):
         print(f'Too much deviation between estimated and theoretical ENLs.')
         #ENL = nNew
     Valid_sigma = da.logical_and((ds.img_lp > 0) , (ds.img_cp > 0))
-    Valid_WOmask = da.logical_and(ds.water_occurrence >= thProbSeeds, Valid_sigma)
+    Valid_WOmask_raw1 = da.logical_and(PW_bu_area_pol1==1, PW_bu_area_pol2==1)
+    Valid_WOmask = da.logical_and(Valid_WOmask_raw1, Valid_sigma)
     args.mean_pol1  = da.nanmean(ds.img_lp[Valid_WOmask])
     args.mean_pol2 = da.nanmean(ds.img_cp[Valid_WOmask])
+    pol1_max = pol1_max
+    pol2_max = pol2_max
+    back_pol1_max = back_pol1_max
+    back_pol2_max = back_pol2_max
     basinMask = da.logical_and(da.logical_and(ds.img_lp>pol1_min, ds.img_cp>pol2_min), da.logical_and(ds.img_lp<pol1_max, ds.img_cp<pol2_max))
     isSample = da.logical_and(basinMask,Valid_WOmask)
     ini_pol1_water = ds.img_lp[isSample]
     ini_pol2_water = ds.img_cp[isSample]
     C0 = da.array([da.mean(ini_pol1_water), da.mean(ini_pol2_water)]).compute()
-    if C0[0] < args.mean_pol1/20 or C0[1] < args.mean_pol2/20:
-        print(f'Warning: The initial boundary is too small compared to the image mean, use boundary from SBA instead.')
-        pol1_min = back_up_pol1_min
-        pol2_min = back_up_pol2_min
-        pol1_max = back_pol1_max
-        pol2_max = back_pol2_max
+    if C0[0] < args.mean_pol1/50 or C0[1] < args.mean_pol2/50 or \
+        pol1_max < back_pol1_max/10 or pol2_max < back_pol2_max/10:
+        print(f'Warning: The initial boundary is too small compared to the backup max (1/10) or persistent water pixels mean (1/50), use boundary from SBA instead.')
+        if pol1_max < back_pol1_max/10: #C0[0] < args.mean_pol1/25 or 
+            pol1_min = back_up_pol1_min
+            pol1_max = (back_pol1_max + pol1_max)/2
+        if  pol2_max < back_pol2_max/10: #C0[1] < args.mean_pol2/25 or
+            pol2_min = back_up_pol2_min
+            pol2_max = (back_pol2_max + pol2_max)/2
         basinMask = da.logical_and(da.logical_and(ds.img_lp>pol1_min, ds.img_cp>pol2_min), da.logical_and(ds.img_lp<pol1_max, ds.img_cp<pol2_max))
         isSample = da.logical_and(basinMask,Valid_WOmask)
         ini_pol1_water = ds.img_lp[isSample]
@@ -230,8 +264,11 @@ def GetStatisticsFrmSample(args, ds):
         C0 = da.array([da.mean(ini_pol1_water), da.mean(ini_pol2_water)]).compute()
     rho_c2 = ((da.mean(ini_pol1_water * ini_pol2_water) - C0[0] * C0[1]) / (da.nanstd(ini_pol1_water) * da.nanstd(ini_pol2_water))).compute()
     #rho_c2 = 0.5
-    if rho_c2 < 0.01:
-        rho_c2 = 0.01
+    if rho_c2 < 0.1:
+        rho_c2 = 0.1
+    # for single pol case, rho_c2 is set to minimum.
+    if rho_c2 > 0.95:
+        rho_c2 = 0.3
     args.C0Init,args.rho_c2Init,args.pol1_max,args.pol1_min,args.pol2_max,args.pol2_min,args.ENL = C0,rho_c2,pol1_max,pol1_min,pol2_max,pol2_min,ENL
     args.I1u, args.I1d = pol1_max,pol1_min
     args.I2u, args.I2d = pol2_max,pol2_min
