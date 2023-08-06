@@ -1,11 +1,11 @@
 ## v1.1.3, Aug-06-2023.
 ### Major update:
 
-1. Enable the input of single polarization.
-2. Add option for incidence angle file input, set incidence angle normalization as prefer choise.
-3. Force the mode to 'single' if only one image is provided.
-4. AdaI internal bug fix.
-5. Adjust the persistent water threshold from 25% to 75% for output RGB files.
+1. Added support for single polarization input.
+2. Added option for incidence angle file input with incidence angle normalization as default.
+3. Automatically set mode to 'single' when only one image is provided.
+4. Fixed internal bug in AdaI module.
+5. Adjusted the persistent water threshold for output RGB files from 25% to 75%.
 
 ### Flexible input format:
 1. Command line input: 

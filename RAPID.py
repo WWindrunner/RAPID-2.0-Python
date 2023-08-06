@@ -120,11 +120,11 @@ def dup_args(args, filepath, granuele_name, wotif=None):
 
 @tim
 def RAPID(*args, **kwargs):
-    if len(args) == 3:
-        # input dual-pol SAR path and output folder from terminal
-        # single mode (default)
-        filepath = [args[0], args[1]]
-        OUT_PATH = args[2]
+    if len(args) > 1 and len(args) <= 4:
+        # input SAR files path and output folder from terminal
+        # keep the last one as output folder
+        filepath = list(args[:-1])
+        OUT_PATH = args[-1]
         config_file = None
         args = parse(config_file)
         args.OUT_PATH = OUT_PATH
