@@ -1,3 +1,4 @@
+# RAPID
 ## v1.1.3, Aug-06-2023.
 ### Major update:
 
@@ -40,7 +41,7 @@ Again, the last one will enable a single image mode, regardless the option in "M
 
 ## v1.1.0. Updated on May-15-2023: Adaptive Initialization (AdaI)
 
-# v1.0.0 RAPID
+## v1.0.0.
 RAPID python version.<br>
 Please note that the code is under development, so performance is not guaranteed.
 
