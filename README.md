@@ -16,13 +16,13 @@ Incidence angle file should contains 'inc' or 'INC' in the file name.
 Simply keep the <Output_Folder> in the end, and other input files can be in any order. For example:
 
 ```
-python -u RAPID.py '<Input_SAR_Pol1>' '<Input_SAR_Pol2>' '<Input_SAR_inc>' <Output_Folder>
+python -u RAPID.py <Input_SAR_Pol1> <Input_SAR_Pol2> <Input_SAR_inc> <Output_Folder>
 ```
 ```
-python -u RAPID.py '<Input_SAR_inc>' '<Input_SAR_Pol1>' '<Input_SAR_Pol2>' <Output_Folder>
+python -u RAPID.py <Input_SAR_inc> <Input_SAR_Pol1> <Input_SAR_Pol2> <Output_Folder>
 ```
 ```
-python -u RAPID.py '<Input_SAR_inc>' '<Input_SAR_Pol1>' <Output_Folder>
+python -u RAPID.py <Input_SAR_inc> <Input_SAR_Pol1> <Output_Folder>
 ```
 
 All the above commands will work, and will enable a single image mode.
