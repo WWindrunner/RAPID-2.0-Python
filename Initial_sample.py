@@ -111,8 +111,14 @@ def findRange_EM(I_raw,wo_raw,thProbSeeds,ENL,PW_ratio = [0.1,0.6],nodata=0,tile
     array_tseed = None
     selected_tiles = []
     hand_tiles = tile_array_overlap(array_wo, tile_shape=tile_shape, pad_value=np.nan)
+    Max_TP = thProbSeeds
+    Min_TP = 0
+    Pass_pre = False
+    Pass_now = False
+    TH_db_pre = None
     while threshold_db == None and thProbSeeds >= 2:
         thProbSeeds = thProbSeeds - 2
+        thProbSeeds = (Max_TP + Min_TP) // 2
         if thProbSeeds <= 0:
             thProbSeeds = 1
         PW_bu_area = PW_buffer(wo,thProbSeeds,tile_shape=(80,80))
@@ -128,6 +134,23 @@ def findRange_EM(I_raw,wo_raw,thProbSeeds,ENL,PW_ratio = [0.1,0.6],nodata=0,tile
             selected_tiles = select_tiles(tiles, hand_candidates,lower_median=False)
             if len(selected_tiles) >= 5:
                 threshold_db = tile_EM_withselect(tiles,selected_tiles)
+                Pass_now = True
+            else:
+                Pass_now = False
+        if Pass_now ==  True:
+            Min_TP = thProbSeeds
+            TH_db_now = threshold_db
+        else:
+            Max_TP = thProbSeeds
+        if Pass_pre == True and Pass_now == False:
+            if Max_TP - Min_TP<=4:
+                threshold_db = TH_db_pre
+                thProbSeeds = Min_TP
+                break
+            else:
+                Max_TP = thProbSeeds
+        elif Pass_pre == False and Pass_now == True:
+            TH_db_pre = TH_db_now
     print(f'Found {len(selected_tiles)} water tiles at Persistent Water Seeds = {thProbSeeds}')
     I_PW = I[(wo>=thProbSeeds) & (I>min_arr)]
     #if array_tseed is None:

@@ -107,10 +107,10 @@ def filepathreader(ds,varnames, infilepath, chunks):
                 setattr(ds, 'inc', readfileio(filename, chunks))
             else:
                 setattr(ds, varnames[pol_index], readfileio(filename, chunks))
+                if 'amp' in filename or 'AMP' in filename:
+                    print(f"Transfer to sigmma: {filename}")
+                    setattr(ds, varnames[pol_index], tosigmma(getattr(ds, varnames[pol_index])))
                 pol_index += 1
-            if 'amp' in infilepath[idx] or 'AMP' in infilepath[idx]:
-                    print(f"Transfer to sigmma: {infilepath[idx]}")
-                    setattr(ds, varnames[idx], tosigmma(getattr(ds, varnames[idx])))
     return ds
 
 def get_src(filepath,args):
