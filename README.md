@@ -5,8 +5,9 @@
 1. Added support for single polarization input.
 2. Added option for incidence angle file input with incidence angle normalization as default.
 3. Automatically set mode to 'single' when only one image is provided.
-4. Fixed internal bug in AdaI module.
+4. Fixed internal bug and improved efficiency in AdaI module.
 5. Adjusted the persistent water threshold for output RGB files from 25% to 75%.
+6. Flexible input format, compatible with previous versions. 
 
 ### Flexible input format:
 1. Command line input: 
@@ -16,13 +17,13 @@ Incidence angle file should contains 'inc' or 'INC' in the file name.
 Simply keep the <Output_Folder> in the end, and other input files can be in any order. For example:
 
 ```
-python -u RAPID.py <Input_SAR_Pol1> <Input_SAR_Pol2> <Input_SAR_inc> <Output_Folder>
+python -u RAPID.py '<Input_SAR_Pol1>' '<Input_SAR_Pol2>' '<Input_SAR_inc>' <Output_Folder>
 ```
 ```
-python -u RAPID.py <Input_SAR_inc> <Input_SAR_Pol1> <Input_SAR_Pol2> <Output_Folder>
+python -u RAPID.py '<Input_SAR_inc>' '<Input_SAR_Pol1>' '<Input_SAR_Pol2>' <Output_Folder>
 ```
 ```
-python -u RAPID.py <Input_SAR_inc> <Input_SAR_Pol1> <Output_Folder>
+python -u RAPID.py '<Input_SAR_inc>' '<Input_SAR_Pol1>' <Output_Folder>
 ```
 
 All the above commands will work, and will enable a single image mode.
