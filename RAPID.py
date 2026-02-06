@@ -15,6 +15,7 @@ from Self_supervised import *
 import subprocess
 # Suppress all warnings
 import warnings
+
 warnings.filterwarnings("ignore")
 
 '''
@@ -25,32 +26,34 @@ Updated 05/15/2023, Adaptive Initialization.
 Created 03/01/2023, RAPID python version.
 '''
 
+
 def mosaic_pre(output):
     '''
     Mosaic the pre-event water mask for the dry reference
     Since we are not directly implementing change detection in terms of backscattering values, 
     the dry and flood images do not need to be in the same geoextent.
     '''
-    #if len(output)==1 and output[0][0].MODE == 'normal':
+    # if len(output)==1 and output[0][0].MODE == 'normal':
     #    output[0][0].floodimage = False
     #    print('No dry images, consider changing the mode to single!')
-    if len(output)==1 or output[0][0].MODE == 'single':
-        output[0][1].pre_mod_mask = da.where(output[0][1].water_occurrence>50,1,0)
+    if len(output) == 1 or output[0][0].MODE == 'single':
+        output[0][1].pre_mod_mask = da.where(output[0][1].water_occurrence > 50, 1, 0)
         print('Single flood image mode, build pre-event water with ESA water occurrence >50')
     else:
         flood_src = output[0][0].ref_src
         dry_srcs = [out[0].ref_src for out in output[1:]]
         mod_masks = [out[1].Mod_mask for out in output[1:]]
         mosaic_results = []
-        for dry_ras,dry_src in zip(mod_masks,dry_srcs):
+        for dry_ras, dry_src in zip(mod_masks, dry_srcs):
             dry_src_meta = dry_src.meta.copy()
             dry_src_meta.update(dtype=rasterio.uint8, nodata=255)
-            mosaic_results.append(dask.delayed(reproject_clip_direct)(dry_ras,dry_src_meta,flood_src.meta.copy()))
+            mosaic_results.append(dask.delayed(reproject_clip_direct)(dry_ras, dry_src_meta, flood_src.meta.copy()))
         mosaic_results = dask.compute(*mosaic_results)
-        mesaic_raw = da.sum(da.stack(mosaic_results, axis=0),axis=0).squeeze()
-        output[0][1].pre_mod_mask = da.where(mesaic_raw>0,1,0)
-        del mosaic_results,mesaic_raw
+        mesaic_raw = da.sum(da.stack(mosaic_results, axis=0), axis=0).squeeze()
+        output[0][1].pre_mod_mask = da.where(mesaic_raw > 0, 1, 0)
+        del mosaic_results, mesaic_raw
     return output
+
 
 def parse(config_json=None):
     '''
@@ -74,8 +77,8 @@ def parse(config_json=None):
     parser.add_argument('--blockSize', default=1024)
     parser.add_argument('--nInter', type=int, default=100)
     parser.add_argument('--morpho_seed_type', type=str, default='both')
-    parser.add_argument('--nWBClasses', default=[8,80])
-    parser.add_argument('--WBClasses', default=[5,6,50,60])
+    parser.add_argument('--nWBClasses', default=[8, 80])
+    parser.add_argument('--WBClasses', default=[5, 6, 50, 60])
     parser.add_argument('--thSensPre', type=float, default=0.2)
     parser.add_argument('--thSensIn', type=float, default=0.1)
     parser.add_argument('--rNWB_WST_Org', type=float, default=0.3)
@@ -101,6 +104,7 @@ def parse(config_json=None):
             setattr(args, arg, loaded_args[arg])
     return args
 
+
 def dup_args(args, filepath, granuele_name, wotif=None):
     '''
     Duplicate the arguments for each input SAR image (dual-pol)
@@ -109,14 +113,15 @@ def dup_args(args, filepath, granuele_name, wotif=None):
     args_new.filepath = filepath
     args_new.wotif = wotif
     args_new.dirOut = os.path.join(args_new.WORK_PATH, granuele_name)
-    args_new.fileSampleMap=os.path.join(args_new.dirOut,'SampleMap.tif') #intermedian result, not used for now
-    args_new.logFile=os.path.join(args_new.dirOut,'sta_log.csv')
-    os.makedirs(args_new.dirOut, exist_ok = True)
+    args_new.fileSampleMap = os.path.join(args_new.dirOut, 'SampleMap.tif')  # intermedian result, not used for now
+    args_new.logFile = os.path.join(args_new.dirOut, 'sta_log.csv')
+    os.makedirs(args_new.dirOut, exist_ok=True)
     if args.blockSize == 'auto':
         args_new.chunks = 'auto'
-    else: 
+    else:
         args_new.chunks = args.blockSize
     return args_new
+
 
 @tim
 def RAPID(*args, **kwargs):
@@ -139,7 +144,7 @@ def RAPID(*args, **kwargs):
     else:
         raise ValueError("Wrong number of input arguments!")
 
-    #Refine ouput path if already exists
+    # Refine ouput path if already exists
     raw_out_path = os.path.join(args.OUT_PATH, os.path.splitext(args.filepath_list[0][0].split('/')[-1])[0])
     if os.path.exists(raw_out_path):
         now = datetime.datetime.now()
@@ -152,10 +157,10 @@ def RAPID(*args, **kwargs):
     filepath_list = args.filepath_list
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
-    
-    #Initial args list for each image
+
+    # Initial args list for each image
     args_list = []
-    for idx,filepath in enumerate(filepath_list):
+    for idx, filepath in enumerate(filepath_list):
         # set granule name
         if len(filepath_list) == len(args.granules):
             granuele_name = args.granules[idx]
@@ -169,31 +174,32 @@ def RAPID(*args, **kwargs):
     # set flood image
     args_list[0].floodimage = True
 
-    if args_list[0].MODE =='swd':
+    if args_list[0].MODE == 'swd':
         '''
         Self-supervised Water Detection. An alternative algorithm for test purpose.
         '''
         print('Running swd!')
         output = dask.compute(*[dask.delayed(Load_Data)(args_list[0])])
-        output[0][1].Compensate_mask,output[0][0].fileOutCompensate, output[0][1].direct_mask = swd(output[0][0], output[0][1])
+        output[0][1].Compensate_mask, output[0][0].fileOutCompensate, output[0][1].direct_mask = swd(output[0][0],
+                                                                                                     output[0][1])
         output[0][0].MODE = 'single'
         out_filepath = quick_look(output)
     else:
         # load image and get ancillary data
         with Timer('Load_Data Total'):
             output = dask.compute(*[dask.delayed(Load_Data)(arggs) for arggs in args_list])
-            #output = [[args_list[i], ds_dask[i]] for i in range(len(args_list))]
+            # output = [[args_list[i], ds_dask[i]] for i in range(len(args_list))]
         if args_list[0].MODE != 'desert':
-            #Normal mode
+            # Normal mode
             with Timer('TOTAL BC TIME'):
                 output = dask.compute(*[dask.delayed(Binary_classification)(*single_out) for single_out in output])
-                    
+
             with Timer('Mosaic_pre TIME'):
                 output = mosaic_pre(output)
             with Timer('Morph_proc'):
                 output = dask.compute(*[dask.delayed(Morph_proc)(*single_out) for single_out in output])
-            with Timer('Compensation'):
-                output = dask.compute(*[dask.delayed(Compensate)(*single_out) for single_out in output])
+            # with Timer('Compensation'):
+            #    output = dask.compute(*[dask.delayed(Compensate)(*single_out) for single_out in output])
             # produce quick look figures
             out_filepath = quick_look(output)
         else:
@@ -201,6 +207,7 @@ def RAPID(*args, **kwargs):
             args_ndfi, ds_ndfi = NDFI(output)
             args_ndfi, ds_ndfi = NDFI_morph(args_ndfi, ds_ndfi)
             args_ndfi, ds_ndfi = NDFI_compensate(args_ndfi, ds_ndfi)
+
 
 if __name__ == '__main__':
     RAPID(*sys.argv[1:])

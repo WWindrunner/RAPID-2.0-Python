@@ -9,7 +9,8 @@ import dask.array as da
 from dask import delayed, compute
 from osgeo import ogr
 
-class AncillaryData():    
+
+class AncillaryData():
     """
     Get ancillary data from the fly, based on the geometry and size of input xarray.
 
@@ -23,12 +24,13 @@ class AncillaryData():
     -------
         Either a list of xarray objects or a stacked xarray object
     """
-    def __init__(self, ref=None, chunk_size = 'auto', datamode='mem'):
+
+    def __init__(self, ref=None, chunk_size='auto', datamode='mem'):
         self.ref = ref
         self.chunk_size = chunk_size
         self.datamode = datamode
         self.bounds = self.getbounds()
-        
+
     def getbounds(self):
         """
         Get the geo bounds of reference file
@@ -52,7 +54,7 @@ class AncillaryData():
             # Use src directly
             latlon_bounds = transform_bounds(self.ref.crs, "EPSG:4326", *self.ref.bounds)
         return latlon_bounds
-    
+
     @tim
     def getWO(self):
         """
@@ -63,13 +65,13 @@ class AncillaryData():
         -------
             Dask array or tempfile of water occurence
         """
-        
+
         Hcrop_Ex = self.bounds
         maxLoESA = int(np.ceil(Hcrop_Ex[2] / 10) * 10)
         minLoESA = int(np.floor(Hcrop_Ex[0] / 10) * 10)
         maxLaESA = int(np.ceil(Hcrop_Ex[3] / 10) * 10 + 10)
         minLaESA = int(np.ceil(Hcrop_Ex[1] / 10) * 10)
-        
+
         if maxLoESA > 0 and minLoESA > 0:
             lons = [str(e) + 'E' for e in range(minLoESA, maxLoESA, 10)]
         elif maxLoESA < 0 and minLoESA < 0:
@@ -85,13 +87,13 @@ class AncillaryData():
         else:
             lats = [str(s) + 'S' for s in np.absolute(range(minLaESA, 0, 10))]
             lats.extend([str(n) + 'N' for n in range(0, maxLaESA, 10)])
-        
-        #ESArevision = '1_3_2020'
+
+        # ESArevision = '1_3_2020'
         ESArevision = '1_4_2021'
         ESAdatasets = ['occurrence']
-        
+
         url_tmpl, file_tmpl, _ = templatesESAwater(ESArevision)
-        elements=[]
+        elements = []
         for ds_name in ESAdatasets:
             for lon in lons:
                 for lat in lats:
@@ -112,7 +114,7 @@ class AncillaryData():
         -------
             Dask array or tempfile of land cover
         """
-        
+
         Hcrop_Ex = self.bounds
         """
         Get the intersect copernicus glo30 data file list based on bounds and offical geojson
@@ -144,7 +146,111 @@ class AncillaryData():
                 elements.append(file_path)
         merged_resandclip = self.merge_res(elements)
         return merged_resandclip
-    
+
+    def getOceanMask(self):
+        """
+        Get global ocean mask from Natural Earth 10m ocean shapefile.
+        Rasterize using rasterio.features (no GDAL needed),
+        then reproject / resample / clip via merge_res.
+
+        Returns
+        -------
+            dask array or tempfile
+            1 = ocean, 0 = land
+        """
+
+        import zipfile
+        import tempfile
+        import urllib.request
+        from rasterio.features import rasterize
+        from rasterio.transform import from_origin
+
+        # --------------------------------------------------
+        # 1. Download Natural Earth ocean shapefile
+        # --------------------------------------------------
+        url = (
+            "https://www.naturalearthdata.com/http//www.naturalearthdata.com/"
+            "download/10m/physical/ne_10m_ocean.zip"
+        )
+
+        tmpdir = tempfile.mkdtemp()
+        zip_path = os.path.join(tmpdir, "ne_10m_ocean.zip")
+
+        print(url)
+        urllib.request.urlretrieve(url, zip_path)
+
+        # --------------------------------------------------
+        # 2. Unzip
+        # --------------------------------------------------
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall(tmpdir)
+
+        shp_path = os.path.join(tmpdir, "ne_10m_ocean.shp")
+        if not os.path.exists(shp_path):
+            raise FileNotFoundError("ne_10m_ocean.shp not found after unzip")
+
+        # --------------------------------------------------
+        # 3. Read geometries with OGR
+        # --------------------------------------------------
+        ds = ogr.Open(shp_path)
+        layer = ds.GetLayer()
+
+        shapes = []
+        for feat in layer:
+            geom = feat.GetGeometryRef()
+            if geom is None:
+                continue
+            shapes.append((geom.ExportToJson(), 1))
+
+        if len(shapes) == 0:
+            raise RuntimeError("No geometries found in ocean shapefile")
+
+        # --------------------------------------------------
+        # 4. Rasterize to a coarse global raster
+        #    (resolution / extent DO NOT matter much,
+        #     merge_res will fix everything)
+        # --------------------------------------------------
+        res = 0.1  # degrees, very coarse is fine
+        xmin, ymin, xmax, ymax = -180.0, -90.0, 180.0, 90.0
+
+        width = int((xmax - xmin) / res)
+        height = int((ymax - ymin) / res)
+
+        transform = from_origin(xmin, ymax, res, res)
+
+        mask = rasterize(
+            shapes=shapes,
+            out_shape=(height, width),
+            transform=transform,
+            fill=0,
+            dtype=np.uint8,
+        )
+
+        # --------------------------------------------------
+        # 5. Write temporary tif
+        # --------------------------------------------------
+        ocean_tif = os.path.join(tmpdir, "ne_10m_ocean.tif")
+
+        with rasterio.open(
+            ocean_tif,
+            "w",
+            driver="GTiff",
+            height=height,
+            width=width,
+            count=1,
+            dtype=np.uint8,
+            crs="EPSG:4326",
+            transform=transform,
+            nodata=0,
+            compress="lzw",
+        ) as dst:
+            dst.write(mask, 1)
+
+        # --------------------------------------------------
+        # 6. Let merge_res do reprojection / resample / clip
+        # --------------------------------------------------
+        return self.merge_res([ocean_tif])
+
     def getLCC_ori(self):
         """
         Get land cover data from GongPeng LCC, based on the geobounds of reference tif or src.
@@ -154,9 +260,9 @@ class AncillaryData():
         -------
             Dask array or tempfile of land cover
         """
-        
+
         Hcrop_Ex = self.bounds
-        #LCCmainURL = "http://data.ess.tsinghua.edu.cn/data/fromglc10_2017v01/fromglc10v01" % expired on May/03/2023, refer to http://data.ess.tsinghua.edu.cn/
+        # LCCmainURL = "http://data.ess.tsinghua.edu.cn/data/fromglc10_2017v01/fromglc10v01" % expired on May/03/2023, refer to http://data.ess.tsinghua.edu.cn/
         LCCmainURL = '/gpfs/sharedfs1/manoslab/data/Land_Cover/GPfromglc10_2017v01/fromglc10v01'
         LCCfileregex = "_LA_LO.tif"
         maxLoLCC = np.ceil(Hcrop_Ex[2])
@@ -172,13 +278,13 @@ class AncillaryData():
             for La in La_arangeGPLCC:
                 LCCfileName = LCCfileregex.replace("LO", str(int(Lo)))
                 LCCfileName = LCCfileName.replace("LA", str(int(La)))
-                url = LCCmainURL+LCCfileName
+                url = LCCmainURL + LCCfileName
                 print(url)
                 elements.append(url)
         merged_resandclip = self.merge_res(elements)
         return merged_resandclip
-    
-    def glo30list(bounds:tuple) -> list:
+
+    def glo30list(bounds: tuple) -> list:
         """
         Get the intersect copernicus glo30 data file list based on bounds and offical geojson
         """
@@ -221,38 +327,39 @@ class AncillaryData():
         -------
             dask array
         """
-        #@dask.delayed
-        #def reproject_clip(in_path, refsrc):
+        # @dask.delayed
+        # def reproject_clip(in_path, refsrc):
         #    with reproject_raster(in_path, refsrc) as in_mem_ds:
         #        rc_data = da.from_array(in_mem_ds.read(1), chunks = self.chunk_size)
         #    return rc_data
         reffile = self.ref
         results = []
         if isinstance(reffile, str):
-            #input with file path
+            # input with file path
             with rasterio.open(reffile) as ref:
                 refsrc = ref
         else:
-            #input with ref src directly
+            # input with ref src directly
             refsrc = reffile
         refsrc = refsrc.meta.copy()
         with rasterio.open(rasterfiles[0]) as src:
             src_dtype = src.dtypes[0]
-        data = [dask.delayed(reproject_clip_readsrc)(url,refsrc) for url in rasterfiles]
+        data = [dask.delayed(reproject_clip_readsrc)(url, refsrc) for url in rasterfiles]
         results = dask.compute(*data)
-        merged_array_raw = da.nanmax(da.stack(results, axis=0),axis=0).astype(src_dtype).squeeze()
+        merged_array_raw = da.nanmax(da.stack(results, axis=0), axis=0).astype(src_dtype).squeeze()
         if self.datamode == 'mem':
-            #save in memory
-            temp = da.from_array(merged_array_raw.compute(), chunks = self.chunk_size)
+            # save in memory
+            temp = da.from_array(merged_array_raw.compute(), chunks=self.chunk_size)
         else:
             ##return a temp file instead
             import tempfile
             # Create a temporary file
             temp = tempfile.NamedTemporaryFile()
-            da.to_hdf5(temp.name,'/merged_array_raw',merged_array_raw)
-        del results,merged_array_raw
+            da.to_hdf5(temp.name, '/merged_array_raw', merged_array_raw)
+        del results, merged_array_raw
         return temp
-    
+
+
 def templatesESAwater(revision):
     """
     Return url templates for ESA data download.
@@ -266,7 +373,7 @@ def templatesESAwater(revision):
         url and filename templates as well as padding
     """
     REVISIONS = ['1_0', '1_1', '1_1_2019', '1_3_2020', '1_4_2021']
-    v10, v11, v11_2019, v13_2020,v14_2021 = REVISIONS
+    v10, v11, v11_2019, v13_2020, v14_2021 = REVISIONS
     url_tmpl = 'http://storage.googleapis.com/global-surface-water/downloads'
     file_tmpl = '{ds}_{lon}_{lat}'
     if revision == v10:
