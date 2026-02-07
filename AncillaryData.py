@@ -168,10 +168,7 @@ class AncillaryData():
         # --------------------------------------------------
         # 1. Download Natural Earth ocean shapefile
         # --------------------------------------------------
-        url = (
-            "https://www.naturalearthdata.com/http//www.naturalearthdata.com/"
-            "download/10m/physical/ne_10m_ocean.zip"
-        )
+        url = "https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_ocean.zip"
 
         tmpdir = tempfile.mkdtemp()
         zip_path = os.path.join(tmpdir, "ne_10m_ocean.zip")
