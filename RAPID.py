@@ -97,6 +97,12 @@ def parse(config_json=None):
     parser.add_argument('--floodimage', default=False)
     parser.add_argument('--failed', default=False)
 
+    # parser.add_argument('--blockSizeSBA', type=int, default=1024,
+    #                     help='Block size for SBA window creation. Default 1024.')
+
+    parser.add_argument('--overlapRatio', type=float, default=0.3,
+                        help='Overlap ratio for SBA windows (0-1). Default 0.3.')
+
     parser.add_argument('--thOccLow', type=float, default=5,
                         help='Lower bound of water occurrence threshold (0-100). Default 5.')
     parser.add_argument('--thOccHigh', type=float, default=99,

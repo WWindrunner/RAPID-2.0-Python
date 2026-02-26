@@ -16,27 +16,33 @@ import scipy.ndimage.filters as filters
 from scipy.ndimage import median_filter
 from scipy.io import savemat, loadmat
 from Initial_sample import *
-
-
-def raster_size(path: str) -> Tuple[int, int]:
-    with rasterio.open(path) as ds:
-        return ds.height, ds.width
+from typing import Tuple
 
 
 def get_block(
-        file_name: str,
+        rowsImage: int,
+        colsImage: int,
         block_size: int,
         overlap: int = 0,
         offset: bool = False,
         keep_size: bool = False
 ) -> Tuple[int, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int]:
-    rowsImage, colsImage = raster_size(file_name)
+    """
+    Same logic as your file-based get_block, but uses provided image shape.
+    Conventions:
+      - Output r0, c0 are 0-based (top-left pixel offsets).
+      - If overlap==0: r0 shape (nR,), c0 shape (nC,)
+      - If overlap>0: r0 shape (nR,2), c0 shape (nC,2) (read/process columns)
+    """
+    rowsImage = int(rowsImage)
+    colsImage = int(colsImage)
 
     if overlap > 0 and offset:
         raise ValueError("cannot set non-zero overlap with offset")
 
     hasReminder = False
     offsetGrids = int(round(block_size / 2))
+
     if offset:
         rowsImage1 = rowsImage - offsetGrids
         colsImage1 = colsImage - offsetGrids
@@ -353,15 +359,17 @@ def dist_th(args, ds):
 def Binary_classification(args, ds):
     # try:
     with Timer('BC TIME ' + args.filepath[0]):
-        if not hasattr(args, "r0"):
-            args.nR, args.nC, args.r0, args.c0, \
-                args.nRows, args.nCols, _, _ = get_block(
-                args.filePol,
-                block_size=args.blockSize,
-                overlap=int(round(args.blockSize * args.th_grid_ratio / 2)),
-                offset=False,
-                keep_size=True
-            )
+        rowsImage, colsImage = ds.img_lp.shape
+        args.blockSizeSBA = max(int(round(rowsImage / 50)), int(round(colsImage / 50)))
+        nR, nC, r0, c0, nRows, nCols, rowsImage, colsImage = get_block(
+            rowsImage, colsImage,
+            block_size=args.blockSizeSBA,
+            overlap=int(round(args.blockSizeSBA * args.overlapRatio / 2)),
+            offset=False,
+            keep_size=True
+        )
+
+        args.nR, args.nC, args.r0, args.c0, args.nRows, args.nCols = nR, nC, r0, c0, nRows, nCols
 
         args, ds = optimizeDist6(args, ds)
         if not args.failed:
