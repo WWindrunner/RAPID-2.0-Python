@@ -18,6 +18,96 @@ from scipy.io import savemat, loadmat
 from Initial_sample import *
 
 
+def raster_size(path: str) -> Tuple[int, int]:
+    with rasterio.open(path) as ds:
+        return ds.height, ds.width
+
+
+def get_block(
+        file_name: str,
+        block_size: int,
+        overlap: int = 0,
+        offset: bool = False,
+        keep_size: bool = False
+) -> Tuple[int, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int]:
+    rowsImage, colsImage = raster_size(file_name)
+
+    if overlap > 0 and offset:
+        raise ValueError("cannot set non-zero overlap with offset")
+
+    hasReminder = False
+    offsetGrids = int(round(block_size / 2))
+    if offset:
+        rowsImage1 = rowsImage - offsetGrids
+        colsImage1 = colsImage - offsetGrids
+        nR = int(np.floor(rowsImage1 / block_size) + (rowsImage1 % block_size > 0) + 1)
+        nC = int(np.floor(colsImage1 / block_size) + (colsImage1 % block_size > 0) + 1)
+        if rowsImage1 % block_size > 0:
+            hasReminder = True
+    else:
+        nR = int(np.floor(rowsImage / block_size) + (rowsImage % block_size > 0))
+        nC = int(np.floor(colsImage / block_size) + (colsImage % block_size > 0))
+        if rowsImage % block_size > 0:
+            hasReminder = True
+
+    if overlap == 0:
+        if offset:
+            r0 = np.array([0] + [k * block_size + offsetGrids for k in range(nR - 1)], dtype=np.int64)
+            c0 = np.array([0] + [k * block_size + offsetGrids for k in range(nC - 1)], dtype=np.int64)
+
+            nRows = np.minimum(rowsImage - r0, block_size).astype(np.int64)
+            nCols = np.minimum(colsImage - c0, block_size).astype(np.int64)
+            nRows[0] = offsetGrids
+            nCols[0] = offsetGrids
+        else:
+            r0 = (np.arange(nR, dtype=np.int64) * block_size)
+            c0 = (np.arange(nC, dtype=np.int64) * block_size)
+            nRows = np.minimum(rowsImage - r0, block_size).astype(np.int64)
+            nCols = np.minimum(colsImage - c0, block_size).astype(np.int64)
+    else:
+        r0 = np.zeros((nR, 2), dtype=np.int64)
+        r0[:, 0] = np.arange(nR, dtype=np.int64) * block_size - overlap
+        r0[0, 0] = 0
+        r0[:, 1] = np.arange(nR, dtype=np.int64) * block_size
+
+        nRows = np.zeros((nR, 2), dtype=np.int64)
+        nRows[:, 0] = np.minimum(block_size + overlap * 2, rowsImage - r0[:, 0])
+        nRows[0, 0] = min(block_size + overlap, rowsImage)
+        nRows[-1, 0] = min(rowsImage - r0[-1, 0], block_size + overlap)
+        nRows[:, 1] = np.minimum(block_size, rowsImage - r0[:, 1])
+        nRows[-1, 1] = min(rowsImage - r0[-1, 1], block_size)
+
+        c0 = np.zeros((nC, 2), dtype=np.int64)
+        c0[:, 0] = np.arange(nC, dtype=np.int64) * block_size - overlap
+        c0[0, 0] = 0
+        c0[:, 1] = np.arange(nC, dtype=np.int64) * block_size
+
+        nCols = np.zeros((nC, 2), dtype=np.int64)
+        nCols[:, 0] = np.minimum(block_size + overlap * 2, colsImage - c0[:, 0])
+        nCols[0, 0] = min(block_size + overlap, colsImage)
+        nCols[-1, 0] = min(colsImage - c0[-1, 0], block_size + overlap)
+        nCols[:, 1] = np.minimum(block_size, colsImage - c0[:, 1])
+        nCols[-1, 1] = min(colsImage - c0[-1, 1], block_size)
+
+    if keep_size and hasReminder:
+        if overlap == 0:
+            r0[-1] = max(0, rowsImage - block_size)
+            c0[-1] = max(0, colsImage - block_size)
+            nRows[-1] = min(block_size, rowsImage)
+            nCols[-1] = min(block_size, colsImage)
+        else:
+            r0[-1, 0] = max(0, rowsImage - block_size - 2 * overlap)
+            r0[-1, 1] = r0[-2, 1] + block_size
+            c0[-1, 0] = max(0, colsImage - block_size - 2 * overlap)
+            c0[-1, 1] = c0[-2, 1] + block_size
+            nRows[-1, 0] = block_size + 2 * overlap
+            nRows[-1, 1] = max(1, rowsImage - r0[-1, 1])
+            nCols[-1, 0] = block_size + 2 * overlap
+            nCols[-1, 1] = max(1, colsImage - c0[-1, 1])
+
+    return nR, nC, r0, c0, nRows, nCols, rowsImage, colsImage
+
+
 def _first_col(x):
     x = np.asarray(x)
     return x[:, 0] if x.ndim == 2 else x
@@ -220,9 +310,9 @@ def findRange_bimodality(args, ds):
     if os.path.exists(args.fileSBAInit):
         d = loadmat(args.fileSBAInit)
         # load into ds so downstream can use it
-        for k in ["r0Sel","c0Sel","nRowsSel","nColsSel",
-                  "rWaterSeeds","cWaterSeeds",
-                  "thOcc","modeOcc","medianWater","stdWater","peakWater"]:
+        for k in ["r0Sel", "c0Sel", "nRowsSel", "nColsSel",
+                  "rWaterSeeds", "cWaterSeeds",
+                  "thOcc", "modeOcc", "medianWater", "stdWater", "peakWater"]:
             if k in d:
                 setattr(ds, k, np.asarray(d[k]).squeeze())
     else:
@@ -257,13 +347,22 @@ def optimizeDist6(args, ds):
 
 @tim
 def dist_th(args, ds):
-
     return args, ds
 
 
 def Binary_classification(args, ds):
     # try:
     with Timer('BC TIME ' + args.filepath[0]):
+        if not hasattr(args, "r0"):
+            args.nR, args.nC, args.r0, args.c0, \
+                args.nRows, args.nCols, _, _ = get_block(
+                args.filePol,
+                block_size=args.blockSize,
+                overlap=int(round(args.blockSize * args.th_grid_ratio / 2)),
+                offset=False,
+                keep_size=True
+            )
+
         args, ds = optimizeDist6(args, ds)
         if not args.failed:
             print('finished initialization ...')
