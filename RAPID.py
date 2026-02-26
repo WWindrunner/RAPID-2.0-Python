@@ -96,7 +96,48 @@ def parse(config_json=None):
     parser.add_argument('--bExport', default=True)
     parser.add_argument('--floodimage', default=False)
     parser.add_argument('--failed', default=False)
+
+    parser.add_argument('--thOccLow', type=float, default=5,
+                        help='Lower bound of water occurrence threshold (0-100). Default 5.')
+    parser.add_argument('--thOccHigh', type=float, default=99,
+                        help='Upper bound of water occurrence threshold (0-100). Default 99.')
+
+    parser.add_argument('--thMinSampleSize', type=int, default=500,
+                        help='Minimum number of seed pixels required to start sampling within a tile. Default 500.')
+
+    parser.add_argument('--thIPrc', type=float, default=50,
+                        help='Percentile used as reference in the stopping test (e.g., 50=median). Default 50.')
+
+    parser.add_argument('--thFrac', type=float, default=0.6,
+                        help='Stopping fraction for newly added pixels being higher than I_prc. '
+                             'Default 0.6 (matches thIPrc=50 -> 1-0.5+0.1).')
+
+    parser.add_argument('--binWidthInit', type=float, default=0.2,
+                        help='Histogram bin width (dB) for peakWater estimation. Default 0.2.')
+
+    parser.add_argument('--codePW', type=int, default=80,
+                        help='ESA WorldCover class code for water (PW). Default 80.')
+
+    parser.add_argument('--showProg', action='store_true',
+                        help='Show progress percentage for SBA seed selection.')
+    parser.add_argument('--noShowProg', action='store_true',
+                        help='Disable progress display (overrides --showProg).')
+
     args, unparsed = parser.parse_known_args()
+    # pack low/high into one tuple like MATLAB thOccLim=[5;99]
+    args.thOccLim = (args.thOccLow, args.thOccHigh)
+
+    # if user changed thIPrc but didn't change thFrac, optionally auto-derive thFrac
+    # (keep explicit thFrac if you prefer; this is the safest behavior)
+    args.thFrac = float(args.thFrac)
+
+    # showProg flags priority
+    if getattr(args, "noShowProg", False):
+        args.showProg = False
+    else:
+        # if neither flag given, showProg will be False by default unless you set it elsewhere
+        args.showProg = bool(getattr(args, "showProg", False))
+
     if config_json is not None:
         with open(config_json, 'r') as f:
             loaded_args = json.load(f)
