@@ -130,10 +130,11 @@ def parse(config_json=None):
     parser.add_argument('--rec_windowsWater', type=int, default=150,
                         help='Recommended number of initialization windows to keep. Default 150.')
 
-    parser.add_argument('--showProg', action='store_true',
+    parser.add_argument('--writeSampleMap', type=bool, default=True,
+                        help='Write initial SBA sample maps (default: True)')
+
+    parser.add_argument('--showProg', type=bool, default=True,
                         help='Show progress percentage for SBA seed selection.')
-    parser.add_argument('--noShowProg', action='store_true',
-                        help='Disable progress display (overrides --showProg).')
 
     args, unparsed = parser.parse_known_args()
     # pack low/high into one tuple like MATLAB thOccLim=[5;99]
@@ -143,12 +144,8 @@ def parse(config_json=None):
     # (keep explicit thFrac if you prefer; this is the safest behavior)
     args.thFrac = float(args.thFrac)
 
-    # showProg flags priority
-    if getattr(args, "noShowProg", False):
-        args.showProg = False
-    else:
-        # if neither flag given, showProg will be False by default unless you set it elsewhere
-        args.showProg = bool(getattr(args, "showProg", False))
+    # showProg flags
+    args.showProg = bool(getattr(args, "showProg", True))
 
     if config_json is not None:
         with open(config_json, 'r') as f:

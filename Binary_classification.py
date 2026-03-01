@@ -17,6 +17,7 @@ from scipy.ndimage import median_filter
 from scipy.io import savemat, loadmat
 from Initial_sample import *
 from typing import Tuple
+from rasterio.windows import Window
 
 
 def get_block(
@@ -301,7 +302,7 @@ def filter_windows_by_modeOcc(args, ds):
       ds.thOcc, ds.modeOcc, ds.medianWater, ds.stdWater, ds.peakWater
 
     Implements:
-      if nWindows < min_windowsWater: error
+      if nWindows < min_windowsWater: warning
       if nWindows > rec_windowsWater: find thOCCFilter then remove modeOcc <= thOCCFilter
     """
     r0Sel = np.asarray(ds.r0Sel).reshape(-1)
@@ -761,6 +762,168 @@ def findRange_bimodality(args, ds):
     return args, ds
 
 
+def createSampleMapSBA(
+    fileSampleMap: str,
+    ds,
+    thProb,      # per-window array, same length as r0/c0
+    r0, c0,      # per-window pixel offsets (0-based)
+    nRows, nCols,# per-window sizes
+    Iu,          # per-window Iu threshold in dB (NaN -> inf)
+    showProg: bool = False,
+    ref_raster_path: str | None = None,  # to fetch transform/crs/shape
+):
+    """
+    Returns:
+      pol_water: 1D numpy array of linear I values sampled from all windows.
+
+    Notes:
+      - Writes a uint8 GeoTIFF sample map:
+          1 = sample pixel
+          0 = evaluated but not sample (inside written windows)
+          255 = nodata elsewhere (not touched)
+      - Uses ds.img_lp and ds.water_occurrence (dask arrays). Each window slice is .compute().
+    """
+
+    r0 = np.asarray(r0).reshape(-1)
+    c0 = np.asarray(c0).reshape(-1)
+    nRows = np.asarray(nRows).reshape(-1)
+    nCols = np.asarray(nCols).reshape(-1)
+    thProb = np.asarray(thProb).reshape(-1)
+    Iu = np.asarray(Iu).reshape(-1)
+
+    nWindows = int(r0.size)
+    if not (c0.size == nWindows == nRows.size == nCols.size == thProb.size == Iu.size):
+        raise ValueError("Window arrays must have the same length.")
+
+    # MATLAB: Iu(isnan(Iu)) = inf
+    Iu = Iu.copy()
+    Iu[np.isnan(Iu)] = np.inf
+
+    # Determine output raster geometry from ref raster (recommended)
+    if ref_raster_path is None:
+        # Common in your framework: args.filepath[0]
+        # If you don't pass ref_raster_path, you'll get a clear error here.
+        raise ValueError("ref_raster_path is required to write a georeferenced GeoTIFF sample map.")
+
+    with rasterio.open(ref_raster_path) as ref:
+        rowsImage, colsImage = ref.height, ref.width
+        transform = ref.transform
+        crs = ref.crs
+
+    # Recreate output file
+    if os.path.exists(fileSampleMap):
+        os.remove(fileSampleMap)
+
+    profile = {
+        "driver": "GTiff",
+        "height": rowsImage,
+        "width": colsImage,
+        "count": 1,
+        "dtype": "uint8",
+        "crs": crs,
+        "transform": transform,
+        "nodata": 255,
+        "compress": "deflate",
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
+    }
+
+    # Create and fill with nodata=255
+    with rasterio.open(fileSampleMap, "w", **profile) as dst:
+        # fill whole raster with 255 once (like MATLAB leaving nodata elsewhere)
+        dst.write(np.full((rowsImage, colsImage), 255, dtype=np.uint8), 1)
+
+        pol_list = []
+
+        for w in range(nWindows):
+            if showProg:
+                prog = (w + 1) / nWindows
+                print(f"\r{int(prog*100)}%...", end="", flush=True)
+
+            rr = int(r0[w]); cc = int(c0[w])
+            hh = int(nRows[w]); ww = int(nCols[w])
+
+            # slice from dask arrays -> numpy
+            I = ds.img_lp[rr:rr+hh, cc:cc+ww].compute()
+            water_prob = ds.water_occurrence[rr:rr+hh, cc:cc+ww].compute()
+
+            # MATLAB condition: water_prob > thProb(w) & I>0 & I_dB < Iu(w)
+            I = np.asarray(I, dtype=np.float64)
+            water_prob = np.asarray(water_prob, dtype=np.float64)
+
+            # avoid log10 warnings
+            valid_I = np.isfinite(I) & (I > 0)
+            I_dB = np.full_like(I, np.nan, dtype=np.float64)
+            I_dB[valid_I] = 10.0 * np.log10(I[valid_I])
+
+            isSample = (water_prob > float(thProb[w])) & valid_I & (I_dB < float(Iu[w]))
+
+            if np.any(isSample):
+                pol_list.append(I[isSample].astype(np.float64, copy=False))
+
+            # write window: 0/1 inside this window, leave others as nodata
+            win = Window(col_off=cc, row_off=rr, width=ww, height=hh)
+            dst.write(isSample.astype(np.uint8), 1, window=win)
+
+        if showProg:
+            print()
+
+    if len(pol_list) == 0:
+        return np.array([], dtype=np.float64)
+    return np.concatenate(pol_list, axis=0)
+
+
+def generate_initial_sample_maps(args, ds, fileSampleMap_root: str, showProg: bool = False):
+    """
+    Implements the loop:
+      for category in 1..nCats:
+        maskCat = cat == ucat(category)
+        createSampleMapSBA(...)
+    """
+
+    print("generating the intial sample mask")
+
+    cat = np.asarray(ds.idx).reshape(-1)  # MATLAB cat == idx (after kmeans)
+    ucat = np.unique(cat)
+    nCats = int(ucat.size)
+
+    pol_water_by_cat = [None] * nCats
+
+    for i, cat_id in enumerate(ucat, start=1):
+        maskCat = (cat == cat_id)
+
+        r0Cat = np.asarray(ds.r0Sel).reshape(-1)[maskCat]
+        c0Cat = np.asarray(ds.c0Sel).reshape(-1)[maskCat]
+        nRowsCat = np.asarray(ds.nRowsSel).reshape(-1)[maskCat]
+        nColsCat = np.asarray(ds.nColsSel).reshape(-1)[maskCat]
+        thOccCat = np.asarray(ds.thOcc).reshape(-1)[maskCat]
+        IuCat = np.asarray(ds.Iu).reshape(-1)[maskCat]
+
+        fileSampleMap = f"{fileSampleMap_root}{i}.tif"
+
+        pol_water = createSampleMapSBA(
+            fileSampleMap=fileSampleMap,
+            ds=ds,
+            thProb=thOccCat,
+            r0=r0Cat, c0=c0Cat,
+            nRows=nRowsCat, nCols=nColsCat,
+            Iu=IuCat,
+            showProg=showProg,
+            ref_raster_path=args.filepath[0],  # 关键：用输入影像拿 transform/crs/shape
+        )
+        pol_water_by_cat[i-1] = pol_water
+
+        # --- placeholders you said to leave for later ---
+        # pol_water_dB = 10*np.log10(pol_water)
+        # muGau1 = np.mean(pol_water_dB)
+        # sigmaGau1 = np.std(pol_water_dB, ddof=1)
+        # sigma2, n_est, mKLD, mNSE, mR2, thProbOut, binWidth = findInitDist(...)
+        # KLD_chi2_frm_sample(...)
+
+    return pol_water_by_cat
+
+
 @tim
 def optimizeDist6(args, ds):
     # SBA init selection (only step a)
@@ -774,6 +937,14 @@ def optimizeDist6(args, ds):
 
     # 3) categorize by peakWater (kmeans) + remove tiny classes + save Cat
     args, ds = categorize_water_classes(args, ds)
+
+    if args.writeSampleMap:
+        fileSampleMap_root = os.path.join(args.dirTempPol, "SampleMap_")
+        generate_initial_sample_maps(
+            args, ds,
+            fileSampleMap_root,
+            showProg=args.showProg
+        )
 
     return args, ds
 
@@ -799,13 +970,9 @@ def Binary_classification(args, ds):
         args.nR, args.nC, args.r0, args.c0, args.nRows, args.nCols = nR, nC, r0, c0, nRows, nCols
 
         args, ds = optimizeDist6(args, ds)
-        if not args.failed:
-            print('finished initialization ...')
-        else:
-            print('initialization failed ...')
+
         args, ds = dist_th(args, ds)
-        # except Exception as e:
-        #    print(e)
+
         if bool(args.tempfiles):
             for itemp in args.tempfiles:
                 print('closing ' + itemp.name)
