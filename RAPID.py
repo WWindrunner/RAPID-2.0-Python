@@ -55,15 +55,33 @@ def mosaic_pre(output):
     return output
 
 
+def _str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    s = str(v).strip().lower()
+    if s in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "f", "no", "n", "off"):
+        return False
+    raise argparse.ArgumentTypeError(f"Boolean value expected, got: {v}")
+
+
 def parse(config_json=None):
-    '''
-    Parse the arguments with default values
-    Read the config file if provided
-    '''
+    """
+    Parse the arguments with default values.
+    Read the config file if provided.
+    """
     parser = argparse.ArgumentParser()
-    parser.add_argument('--showDist', default=False)
-    parser.add_argument('--Iter', default=False)
-    parser.add_argument('--granules', default=[])
+
+    # Existing args (kept)
+    parser.add_argument('--showDist', type=_str2bool, default=False)
+    parser.add_argument('--Iter', type=_str2bool, default=False)
+
+    # Better granules handling (optional; safe)
+    parser.add_argument('--granules', nargs='*', default=[])
+
     parser.add_argument('--MODE', type=str, default='single')
     parser.add_argument('--thProb', type=float, default=0.87)
     parser.add_argument('--thProbMax', type=float, default=0.89)
@@ -74,11 +92,17 @@ def parse(config_json=None):
     parser.add_argument('--PDFScaling', type=float, default=1)
     parser.add_argument('--th_grid_ratio', type=float, default=0.3)
     parser.add_argument('--ENL', type=float, default=4.9)
-    parser.add_argument('--blockSize', default=1024)
+
+    # IMPORTANT: ensure int
+    parser.add_argument('--blockSize', type=int, default=1024)
+
     parser.add_argument('--nInter', type=int, default=100)
     parser.add_argument('--morpho_seed_type', type=str, default='both')
-    parser.add_argument('--nWBClasses', default=[8, 80])
-    parser.add_argument('--WBClasses', default=[5, 6, 50, 60])
+
+    # Safer list parsing (optional; won’t break config_json usage)
+    parser.add_argument('--nWBClasses', nargs='*', type=int, default=[8, 80])
+    parser.add_argument('--WBClasses', nargs='*', type=int, default=[5, 6, 50, 60])
+
     parser.add_argument('--thSensPre', type=float, default=0.2)
     parser.add_argument('--thSensIn', type=float, default=0.1)
     parser.add_argument('--rNWB_WST_Org', type=float, default=0.3)
@@ -88,18 +112,19 @@ def parse(config_json=None):
     parser.add_argument('--thInund', type=float, default=0.3)
     parser.add_argument('--rInund', type=float, default=1)
     parser.add_argument('--rProb', type=float, default=0.5)
-    parser.add_argument('--imported', default=False)
-    parser.add_argument('--optIterAlg', default=True)
+
+    parser.add_argument('--imported', type=_str2bool, default=False)
+    parser.add_argument('--optIterAlg', type=_str2bool, default=True)
     parser.add_argument('--log_file_err', type=str, default='')
-    parser.add_argument('--showProgress', default=False)
-    parser.add_argument('--bInitialized', default=False)
-    parser.add_argument('--bExport', default=True)
-    parser.add_argument('--floodimage', default=False)
-    parser.add_argument('--failed', default=False)
+    parser.add_argument('--showProgress', type=_str2bool, default=False)
+    parser.add_argument('--bInitialized', type=_str2bool, default=False)
+    parser.add_argument('--bExport', type=_str2bool, default=True)
+    parser.add_argument('--floodimage', type=_str2bool, default=False)
+    parser.add_argument('--failed', type=_str2bool, default=False)
 
-    # parser.add_argument('--blockSizeSBA', type=int, default=1024,
-    #                     help='Block size for SBA window creation. Default 1024.')
-
+    # -----------------------------
+    # New SBA / bimodality params
+    # -----------------------------
     parser.add_argument('--overlapRatio', type=float, default=0.3,
                         help='Overlap ratio for SBA windows (0-1). Default 0.3.')
 
@@ -110,48 +135,56 @@ def parse(config_json=None):
 
     parser.add_argument('--thMinSampleSize', type=int, default=500,
                         help='Minimum number of seed pixels required to start sampling within a tile. Default 500.')
-
     parser.add_argument('--thIPrc', type=float, default=50,
-                        help='Percentile used as reference in the stopping test (e.g., 50=median). Default 50.')
-
+                        help='Percentile used as reference in the stopping test. Default 50.')
     parser.add_argument('--thFrac', type=float, default=0.6,
-                        help='Stopping fraction for newly added pixels being higher than I_prc. '
-                             'Default 0.6 (matches thIPrc=50 -> 1-0.5+0.1).')
-
+                        help='Stopping fraction. Default 0.6 (for thIPrc=50).')
     parser.add_argument('--binWidthInit', type=float, default=0.2,
                         help='Histogram bin width (dB) for peakWater estimation. Default 0.2.')
-
     parser.add_argument('--codePW', type=int, default=80,
-                        help='ESA WorldCover class code for water (PW). Default 80.')
+                        help='ESA WorldCover class code for water. Default 80.')
 
     parser.add_argument('--min_windowsWater', type=int, default=20,
                         help='Minimum number of initialization windows required. Default 20.')
-
     parser.add_argument('--rec_windowsWater', type=int, default=150,
                         help='Recommended number of initialization windows to keep. Default 150.')
 
-    parser.add_argument('--writeSampleMap', type=bool, default=True,
-                        help='Write initial SBA sample maps (default: True)')
-
-    parser.add_argument('--showProg', type=bool, default=True,
+    parser.add_argument('--writeSampleMap', type=_str2bool, default=True,
+                        help='Write initial SBA sample maps (default: True).')
+    parser.add_argument('--showProg', type=_str2bool, default=True,
                         help='Show progress percentage for SBA seed selection.')
 
+    parser.add_argument('--thPC', nargs=2, type=float, default=[0.001, 0.999],
+                        help='PC range for valid GMM. Two floats: low high.')
+    parser.add_argument('--thAD', type=float, default=0.0)
+    parser.add_argument('--thRH', type=float, default=0.5)
+    parser.add_argument('--thDist2Mean', type=float, default=0.1)
+
     args, unparsed = parser.parse_known_args()
-    # pack low/high into one tuple like MATLAB thOccLim=[5;99]
-    args.thOccLim = (args.thOccLow, args.thOccHigh)
 
-    # if user changed thIPrc but didn't change thFrac, optionally auto-derive thFrac
-    # (keep explicit thFrac if you prefer; this is the safest behavior)
+    # Pack MATLAB-style thOccLim=[low;high]
+    args.thOccLim = (float(args.thOccLow), float(args.thOccHigh))
+
+    # Ensure types
     args.thFrac = float(args.thFrac)
+    args.showProg = bool(args.showProg)
+    args.writeSampleMap = bool(args.writeSampleMap)
+    args.thPC = (float(args.thPC[0]), float(args.thPC[1]))
 
-    # showProg flags
-    args.showProg = bool(getattr(args, "showProg", True))
-
+    # Load config overrides last (your original behavior)
     if config_json is not None:
         with open(config_json, 'r') as f:
             loaded_args = json.load(f)
-        for arg in loaded_args:
-            setattr(args, arg, loaded_args[arg])
+        for k, v in loaded_args.items():
+            setattr(args, k, v)
+
+        # If config overwrote these, normalize again
+        args.thOccLim = (float(getattr(args, "thOccLow", args.thOccLim[0])),
+                         float(getattr(args, "thOccHigh", args.thOccLim[1])))
+        args.thPC = tuple(getattr(args, "thPC", args.thPC))
+        args.writeSampleMap = _str2bool(getattr(args, "writeSampleMap", args.writeSampleMap))
+        args.showProg = _str2bool(getattr(args, "showProg", args.showProg))
+
     return args
 
 
