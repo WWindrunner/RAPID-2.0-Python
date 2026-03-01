@@ -124,6 +124,12 @@ def parse(config_json=None):
     parser.add_argument('--codePW', type=int, default=80,
                         help='ESA WorldCover class code for water (PW). Default 80.')
 
+    parser.add_argument('--min_windowsWater', type=int, default=20,
+                        help='Minimum number of initialization windows required. Default 20.')
+
+    parser.add_argument('--rec_windowsWater', type=int, default=150,
+                        help='Recommended number of initialization windows to keep. Default 150.')
+
     parser.add_argument('--showProg', action='store_true',
                         help='Show progress percentage for SBA seed selection.')
     parser.add_argument('--noShowProg', action='store_true',
