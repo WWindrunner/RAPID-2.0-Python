@@ -568,18 +568,28 @@ def _init_bimod_one_window(args, ds, w):
 
 
 def run_init_bimodality_dask(args, ds):
-    """
-    Admin side:
-      - dispatch window tasks with dask.delayed
-      - collect Iu/pc/mu/sigma/RH/AD arrays
-      - filter out invalid Iu (MATLAB: imag(Iu)==0) and (optionally) validate mask
-      - save SBAInitUnCat.mat
-    """
-    nWindows = int(np.asarray(ds.r0Sel).size)
-    tasks = [dask.delayed(_init_bimod_one_window)(args, ds, w) for w in range(nWindows)]
-    results = dask.compute(*tasks)
+    r0s = np.asarray(ds.r0Sel).astype(np.int64).ravel()
+    c0s = np.asarray(ds.c0Sel).astype(np.int64).ravel()
+    nrs = np.asarray(ds.nRowsSel).astype(np.int64).ravel()
+    ncs = np.asarray(ds.nColsSel).astype(np.int64).ravel()
+    ths = np.asarray(ds.thOcc).astype(np.float64).ravel()
 
-    # allocate outputs
+    nWindows = r0s.size
+    if nWindows == 0:
+        return args, ds
+
+    # 1) 联合 bbox（最小覆盖）
+    r_min = int(r0s.min())
+    c_min = int(c0s.min())
+    r_max = int((r0s + nrs).max())
+    c_max = int((c0s + ncs).max())
+
+    # 2) 一次性把 bbox 子区域 compute 成 numpy
+    # 注意：这里不会创建任何新的 dask task；只是把必要数据拉到本 worker
+    img_bbox = ds.img_lp[r_min:r_max, c_min:c_max].compute()
+    wo_bbox = ds.water_occurrence[r_min:r_max, c_min:c_max].compute()
+
+    # 3) 分配输出
     Iu = np.full((nWindows,), np.nan, dtype=np.float64)
     RH = np.full((nWindows,), np.nan, dtype=np.float64)
     AD = np.full((nWindows,), np.nan, dtype=np.float64)
@@ -588,24 +598,47 @@ def run_init_bimodality_dask(args, ds):
     sigma = np.full((nWindows, 2), np.nan, dtype=np.float64)
     valid = np.zeros((nWindows,), dtype=bool)
 
-    for r in results:
-        w = int(r["w"])
-        Iu[w] = float(r["Iu"]) if np.isfinite(r["Iu"]) else np.nan
-        RH[w] = float(r["RH"]) if np.isfinite(r["RH"]) else np.nan
-        AD[w] = float(r["AD"]) if np.isfinite(r["AD"]) else np.nan
-        pc[w, :] = np.asarray(r["pc"], dtype=np.float64).reshape(2)
-        mu[w, :] = np.asarray(r["mu"], dtype=np.float64).reshape(2)
-        sigma[w, :] = np.asarray(r["sigma"], dtype=np.float64).reshape(2)
-        valid[w] = bool(r["valid"])
+    # 4) 纯 numpy window 循环（没有 dask / 没有 compute）
+    for w in range(nWindows):
+        r0 = int(r0s[w]);
+        c0 = int(c0s[w])
+        nRows = int(nrs[w]);
+        nCols = int(ncs[w])
+        thOcc = float(ths[w])
 
-    # MATLAB: maskValid = imag(Iu)==0; then filter all arrays
-    maskIuReal = np.isfinite(Iu)  # no complex produced in our implementation
-    maskKeep = maskIuReal  # you can also do: maskKeep = maskIuReal & valid
+        rr0 = r0 - r_min
+        cc0 = c0 - c_min
 
-    # lowerMean = mu(:,1)
+        I_lin = img_bbox[rr0:rr0 + nRows, cc0:cc0 + nCols]
+        probW = wo_bbox[rr0:rr0 + nRows, cc0:cc0 + nCols]
+
+        Iu_w, pc_w, mu_w, sigma_w, RH_w = threshold_gmm_window(
+            I_lin, probW, thOcc, waterOnly=False
+        )
+        maskValid_w, AD_w = validate_gmm(
+            RH_w, pc_w, mu_w, sigma_w, Iu_w,
+            thPC=tuple(args.thPC),
+            thAD=float(args.thAD),
+            thRH=float(args.thRH),
+            thDist2Mean=float(args.thDist2Mean),
+            separately=True
+        )
+
+        if np.isfinite(Iu_w):
+            Iu[w] = float(Iu_w)
+        RH[w] = float(RH_w) if np.isfinite(RH_w) else np.nan
+        AD[w] = float(AD_w) if np.isfinite(AD_w) else np.nan
+        pc[w, :] = np.asarray(pc_w, dtype=np.float64).reshape(2)
+        mu[w, :] = np.asarray(mu_w, dtype=np.float64).reshape(2)
+        sigma[w, :] = np.asarray(sigma_w, dtype=np.float64).reshape(2)
+        valid[w] = bool(maskValid_w)
+
+    # 5) 过滤逻辑保持不变
+    maskIuReal = np.isfinite(Iu)
+    maskKeep = maskIuReal
+
     mu1 = mu[:, 0]
 
-    # filter
     for name, arr in [
         ("thOcc", np.asarray(ds.thOcc).reshape(-1)),
         ("r0Sel", np.asarray(ds.r0Sel).reshape(-1)),
@@ -629,7 +662,6 @@ def run_init_bimodality_dask(args, ds):
     ds.AD = AD[maskKeep]
     ds.valid_bimod = valid[maskKeep]
 
-    # save "UnCat" like MATLAB
     if getattr(args, "fileSBAInitUnCat", None):
         os.makedirs(os.path.dirname(args.fileSBAInitUnCat) or ".", exist_ok=True)
         savemat(args.fileSBAInitUnCat, {
