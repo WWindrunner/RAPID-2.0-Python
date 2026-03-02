@@ -160,6 +160,21 @@ def parse(config_json=None):
     parser.add_argument('--thRH', type=float, default=0.5)
     parser.add_argument('--thDist2Mean', type=float, default=0.1)
 
+    parser.add_argument('--maxENL', type=float, default=10.0,
+                        help='Upper bound of ENL search in findInitDist. Default 10.0.')
+
+    parser.add_argument('--thKLD', type=float, default=0.5,
+                        help='Remove categories if KLD > thKLD. Default 0.5.')
+
+    parser.add_argument('--thNSE', type=float, default=0.0,
+                        help='Remove categories if NSE < thNSE. Default 0.0.')
+
+    parser.add_argument('--thR2', type=float, default=0.0,
+                        help='Remove categories if R2 < thR2. Default 0.0.')
+
+    parser.add_argument('--writeSampleDist', type=_str2bool, default=True,
+                        help='Write chi-square vs empirical distribution figures for each category. Default True.')
+
     args, unparsed = parser.parse_known_args()
 
     # Pack MATLAB-style thOccLim=[low;high]
@@ -170,6 +185,11 @@ def parse(config_json=None):
     args.showProg = bool(args.showProg)
     args.writeSampleMap = bool(args.writeSampleMap)
     args.thPC = (float(args.thPC[0]), float(args.thPC[1]))
+    args.maxENL = float(args.maxENL)
+    args.thKLD = float(args.thKLD)
+    args.thNSE = float(args.thNSE)
+    args.thR2 = float(args.thR2)
+    args.writeSampleDist = bool(args.writeSampleDist)
 
     # Load config overrides last (your original behavior)
     if config_json is not None:

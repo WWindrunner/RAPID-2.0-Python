@@ -1,6 +1,8 @@
+import math
 import os
 import dask
 import dask.array as da
+from dask import delayed
 import numpy as np
 from utils import *
 from scipy.stats.distributions import chi2
@@ -19,6 +21,8 @@ from scipy.io import savemat, loadmat
 from Initial_sample import *
 from typing import Tuple
 from rasterio.windows import Window
+from Dist_th import dist_th_window_worker
+from Statistics import KLD_chi2_frm_sample, validate_gmm
 
 
 def get_block(
@@ -486,48 +490,6 @@ def threshold_gmm_window(I_lin, probW, thProb, waterOnly=False):
 
 
 # -----------------------------
-# validateGMM (Python port)
-# -----------------------------
-
-def validate_gmm(RH, pc, mu, sigma, Iu, thPC=(0.001, 0.999), thAD=0.0, thRH=0.5, thDist2Mean=0.1, separately=True):
-    """
-    Port of validateGMM.m for the 2-mode case.
-    Returns (maskValid, AD)
-    """
-    # maskIu: real (MATLAB imag(Iu)==0)
-    maskIu = np.isfinite(Iu) and (not np.iscomplexobj(Iu))
-
-    pc = np.asarray(pc).reshape(-1)
-    mu = np.asarray(mu).reshape(-1)
-    sigma = np.asarray(sigma).reshape(-1)
-
-    if pc.size < 2 or mu.size < 2 or sigma.size < 2 or not np.isfinite(RH):
-        return False, np.nan
-
-    if separately:
-        maskPC = (pc[0] > thPC[0]) and (pc[0] < thPC[1])
-        AD = float(abs(mu[0] - mu[1]) / min(sigma[0], sigma[1]))
-        maskAD = AD > thAD
-        maskRH = float(RH) < thRH
-
-        dist2Mean = min(abs(Iu - mu[0]), abs(Iu - mu[1]))
-        mStd = np.sqrt(sigma[0] * sigma[1])
-        maskDist2Mean = (dist2Mean / mStd) > thDist2Mean
-    else:
-        # not needed for 2-mode windows here
-        maskPC = True
-        AD = float(abs(mu[0] - mu[1]) / min(sigma[0], sigma[1]))
-        maskAD = AD > thAD
-        maskRH = float(RH) < thRH
-        dist2Mean = min(abs(Iu - mu[0]), abs(Iu - mu[1]))
-        mStd = np.sqrt(sigma[0] * sigma[1])
-        maskDist2Mean = (dist2Mean / mStd) > thDist2Mean
-
-    maskValid = bool(maskPC and maskRH and maskAD and maskIu and maskDist2Mean)
-    return maskValid, AD
-
-
-# -----------------------------
 # Worker task (init_find_bimod_th_worker equivalent)
 # -----------------------------
 
@@ -927,21 +889,194 @@ def createSampleMapSBA(
     return np.concatenate(pol_list, axis=0)
 
 
-def generate_initial_sample_maps(args, ds, fileSampleMap_root: str, showProg: bool = False):
+def findInitDist(
+    I: np.ndarray,
+    muGaussian,
+    sigmaGaussian,
+    Iu,
+    maxENL: float,
+):
     """
-    Implements the loop:
-      for category in 1..nCats:
-        maskCat = cat == ucat(category)
-        createSampleMapSBA(...)
+    MATLAB:
+      [sigma2, ENLa, mKLD, mNSE, mR2, thProb, binWidth] = findInitDist(I, muGaussian, sigmaGaussian, Iu, maxENL)
+
+    Notes
+    -----
+    - I is linear-domain intensity samples (NOT dB).
+    - muGaussian and sigmaGaussian are in dB domain in the original workflow.
+    - Iu is provided in dB in your call site (you pass `inf` sometimes).
+      In MATLAB they do: Iu = 10^(Iu/10) at the beginning.
+    - binWidth is percentile(I, 5) in MATLAB.
+    - Two modes:
+        mode=1 if accLeft2Peak < 0.1: ENLs=0.2:0.1:1.5, anchor sigma2 from mu/sigma
+        mode=2 else: ENLs=1.1:0.1:maxENL, anchor sigma2 from peak position ratio
+    - scoring: maximize (1 - KLD + NSE + r^2)
     """
+    I = np.asarray(I, dtype=float)
+    I = I[np.isfinite(I)]
+    if I.size == 0:
+        return float("nan"), float("nan"), float("inf"), float("-inf"), 0.0, float("nan"), float("nan")
 
-    print("generating the intial sample mask")
+    # MATLAB: binWidth = prctile(I, 5)
+    binWidth = float(np.percentile(I, 5))
+    if not np.isfinite(binWidth) or binWidth <= 0:
+        # fallback: small positive bin width
+        binWidth = float(np.maximum(np.std(I) / 50.0, 1e-6))
 
-    cat = np.asarray(ds.idx).reshape(-1)  # MATLAB cat == idx (after kmeans)
+    # build histogram to find peak location
+    # use bins anchored at min(I) for stability, with fixed binWidth
+    i_min = float(np.min(I))
+    i_max = float(np.max(I))
+    n_bins = int(np.ceil((i_max - i_min) / binWidth)) + 1
+    if n_bins < 3:
+        n_bins = 3
+    edges = i_min + binWidth * np.arange(n_bins + 1, dtype=float)
+    hist_prob, bin_edges = np.histogram(I, bins=edges, density=False)
+    hist_prob = hist_prob.astype(float)
+    hist_prob = hist_prob / np.sum(hist_prob) if np.sum(hist_prob) > 0 else hist_prob
+
+    if hist_prob.size == 0:
+        return float("nan"), float("nan"), float("inf"), float("-inf"), 0.0, float("nan"), float("nan")
+
+    locPeaks = int(np.argmax(hist_prob))  # peak bin index
+    accLeft2Peak = float(np.sum(hist_prob[: locPeaks + 1]))
+
+    if accLeft2Peak < 0.1:
+        ENLs = np.arange(0.2, 1.5 + 1e-12, 0.1)
+        mode = 1
+    else:
+        ENLs = np.arange(1.1, float(maxENL) + 1e-12, 0.1)
+        mode = 2
+
+    nLooks = ENLs.size
+    KLDs = np.full(nLooks, np.inf, dtype=float)
+    NSEs = np.full(nLooks, -np.inf, dtype=float)
+    Rs = np.zeros(nLooks, dtype=float)
+    thProbs = np.zeros(nLooks, dtype=float)
+
+    # MATLAB: Iu=10^(Iu/10); then mean(muGaussian), mean(sigmaGaussian)
+    if np.isfinite(Iu):
+        Iu_lin = 10.0 ** (float(Iu) / 10.0)
+    else:
+        Iu_lin = float("inf")
+
+    muG = float(np.mean(muGaussian))
+    sigG = float(np.mean(sigmaGaussian))
+
+    C = np.full(nLooks, np.nan, dtype=float)
+
+    if mode == 1:
+        # MATLAB:
+        # sigma2 = 10^(mu/10) * exp(sigma^2*(log(10))^2/200)
+        sigma2_anchor = (10.0 ** (muG / 10.0)) * math.exp((sigG**2) * (math.log(10.0) ** 2) / 200.0)
+        C[:] = sigma2_anchor
+
+        for i, ENL in enumerate(ENLs):
+            if np.isfinite(Iu_lin):
+                Xu = 2.0 * ENL * Iu_lin / sigma2_anchor
+                thProbs[i] = float(chi2.cdf(Xu, df=2.0 * ENL))
+            else:
+                thProbs[i] = 0.99
+
+            KLDs[i], _, _, Rs[i], NSEs[i] = KLD_chi2_frm_sample(
+                I=I,
+                sigma2=sigma2_anchor,
+                interval=binWidth,
+                n=float(ENL),
+                p=float(thProbs[i]),
+                trailing=3,
+                real2theo=False,
+                out_figure=None,
+            )
+
+    else:
+        # MATLAB:
+        # Ip = (edges(locPeaks)+edges(locPeaks+1))/2
+        # XPeak = 2*ENL-2
+        # C = 2*Ip*ENL/XPeak
+        Ip = 0.5 * (bin_edges[locPeaks] + bin_edges[locPeaks + 1])
+
+        for i, ENL in enumerate(ENLs):
+            XPeak = 2.0 * ENL - 2.0
+            if XPeak <= 0:
+                # avoid invalid
+                C[i] = np.nan
+                KLDs[i] = np.inf
+                NSEs[i] = -np.inf
+                Rs[i] = 0.0
+                thProbs[i] = 0.99 if not np.isfinite(Iu_lin) else np.nan
+                continue
+
+            C[i] = 2.0 * Ip * ENL / XPeak
+
+            if np.isfinite(Iu_lin):
+                Xu = 2.0 * ENL * Iu_lin / C[i]
+                thProbs[i] = float(min(0.99, chi2.cdf(Xu, df=2.0 * ENL)))
+            else:
+                thProbs[i] = 0.99
+
+            KLDs[i], _, _, Rs[i], NSEs[i] = KLD_chi2_frm_sample(
+                I=I,
+                sigma2=float(C[i]),
+                interval=binWidth,
+                n=float(ENL),
+                p=float(thProbs[i]),
+                trailing=3,
+                real2theo=False,
+                out_figure=None,
+            )
+
+    # MATLAB:
+    # [maxScore,maxInd]=max(1-KLDs+NSEs+Rs.^2);
+    scores = (1.0 - KLDs) + NSEs + (Rs ** 2)
+    maxInd = int(np.nanargmax(scores)) if np.any(np.isfinite(scores)) else 0
+
+    mKLD = float(KLDs[maxInd])
+    mNSE = float(NSEs[maxInd])
+    mR2 = float(Rs[maxInd] ** 2)
+    ENLa = float(ENLs[maxInd])
+    sigma2_best = float(C[maxInd])
+    thProb_best = float(thProbs[maxInd])
+
+    return sigma2_best, ENLa, mKLD, mNSE, mR2, thProb_best, binWidth
+
+
+def generate_initial_sample_maps(
+    args,
+    ds,
+    fileSampleMap_root: str,
+    dirTempPol: str,
+    maxENL: float,
+    thKLD: float,
+    thNSE: float,
+    thR2: float,
+    save_sample_map: bool = False,
+    save_sample_dist: bool = False,
+    showProg: bool = False,
+):
+    """
+    Key steps per category:
+      1) createSampleMapSBA -> pol_water (linear)
+      2) estimate mu/sigma in dB
+      3) findInitDist -> sigma2, n_est, scores, thProb, binWidth
+      4) KLD_chi2_frm_sample (optional figure)
+      5) remove invalid categories by thresholds; delete files
+    """
+    print("generating the initial sample mask")
+
+    cat = np.asarray(ds.idx).reshape(-1)
     ucat = np.unique(cat)
     nCats = int(ucat.size)
 
     pol_water_by_cat = [None] * nCats
+
+    sigma2 = np.full(nCats, np.nan, dtype=float)
+    n_est = np.full(nCats, np.nan, dtype=float)
+    binWidth = np.full(nCats, np.nan, dtype=float)
+    mKLD = np.full(nCats, np.nan, dtype=float)
+    mNSE = np.full(nCats, np.nan, dtype=float)
+    mR2 = np.full(nCats, np.nan, dtype=float)
+    thProb = np.full(nCats, np.nan, dtype=float)
 
     for i, cat_id in enumerate(ucat, start=1):
         maskCat = (cat == cat_id)
@@ -954,7 +1089,9 @@ def generate_initial_sample_maps(args, ds, fileSampleMap_root: str, showProg: bo
         IuCat = np.asarray(ds.Iu).reshape(-1)[maskCat]
 
         fileSampleMap = f"{fileSampleMap_root}{i}.tif"
+        fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.fig")
 
+        # 1) sample map + pol_water（线性域）
         pol_water = createSampleMapSBA(
             fileSampleMap=fileSampleMap,
             ds=ds,
@@ -963,18 +1100,91 @@ def generate_initial_sample_maps(args, ds, fileSampleMap_root: str, showProg: bo
             nRows=nRowsCat, nCols=nColsCat,
             Iu=IuCat,
             showProg=showProg,
-            ref_raster_path=args.filepath[0],  # 关键：用输入影像拿 transform/crs/shape
+            ref_raster_path=args.filepath[0],
         )
-        pol_water_by_cat[i-1] = pol_water
 
-        # --- placeholders you said to leave for later ---
-        # pol_water_dB = 10*np.log10(pol_water)
-        # muGau1 = np.mean(pol_water_dB)
-        # sigmaGau1 = np.std(pol_water_dB, ddof=1)
-        # sigma2, n_est, mKLD, mNSE, mR2, thProbOut, binWidth = findInitDist(...)
-        # KLD_chi2_frm_sample(...)
+        pol_water_by_cat[i - 1] = pol_water  # 你后面可能还要用
 
-    return pol_water_by_cat
+        # 如果不想保留 sample map 文件，这里先记着，循环后统一删也行
+        #（我这里选择：后面“无效类”一定删；有效类按 save_sample_map 决定是否删）
+        # 2) dB域统计
+        pol_water_dB = 10.0 * np.log10(pol_water)
+        muGau1 = float(np.mean(pol_water_dB))
+        sigmaGau1 = float(np.std(pol_water_dB, ddof=1))  # MATLAB std 默认 ddof=1
+
+        # 3) 初始化分布（MATLAB 传 inf）
+        sigma2_i, n_est_i, mKLD_i, mNSE_i, mR2_i, thProb_i, binWidth_i = findInitDist(
+            I=pol_water,
+            muGaussian=muGau1,
+            sigmaGaussian=sigmaGau1,
+            Iu=np.inf,
+            maxENL=maxENL,
+        )
+
+        sigma2[i - 1] = sigma2_i
+        n_est[i - 1] = n_est_i
+        mKLD[i - 1] = mKLD_i
+        mNSE[i - 1] = mNSE_i
+        mR2[i - 1] = mR2_i
+        thProb[i - 1] = thProb_i
+        binWidth[i - 1] = binWidth_i
+
+        # 4) 画图（可选）
+        if save_sample_dist:
+            KLD_chi2_frm_sample(
+                I=pol_water,
+                sigma2=sigma2_i,
+                interval=binWidth_i,
+                n=n_est_i,
+                p=thProb_i,
+                trailing=3,
+                real2theo=False,
+                out_figure=fileSampleDist,
+            )
+
+        # 5) 如果不保留 sample map，且当前类“暂时还未知是否有效”，可以先不删；
+        #    我们等后面统一按 maskInvalidCat 删。
+        #    但如果你确定永远不需要这些文件，也可以这里先删（不推荐）。
+
+    # === remove categories with low statistics ===
+    maskInvalidCat = (mKLD > thKLD) | (mNSE < thNSE) | (mR2 < thR2)
+
+    indRemove = np.where(maskInvalidCat)[0]  # 0-based indices
+    for idx0 in indRemove:
+        i = idx0 + 1
+        fileSampleMap = f"{fileSampleMap_root}{i}.tif"
+        fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.fig")
+        if os.path.exists(fileSampleMap):
+            os.remove(fileSampleMap)
+        if os.path.exists(fileSampleDist):
+            os.remove(fileSampleDist)
+
+    if not save_sample_map:
+        for idx0 in np.where(~maskInvalidCat)[0]:
+            i = idx0 + 1
+            fileSampleMap = f"{fileSampleMap_root}{i}.tif"
+            if os.path.exists(fileSampleMap):
+                os.remove(fileSampleMap)
+
+    if not save_sample_dist:
+        for idx0 in np.where(~maskInvalidCat)[0]:
+            i = idx0 + 1
+            fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.fig")
+            if os.path.exists(fileSampleDist):
+                os.remove(fileSampleDist)
+
+    return {
+        "pol_water_by_cat": pol_water_by_cat,
+        "sigma2": sigma2,
+        "n_est": n_est,
+        "binWidth": binWidth,
+        "mKLD": mKLD,
+        "mNSE": mNSE,
+        "mR2": mR2,
+        "thProb": thProb,
+        "maskInvalidCat": maskInvalidCat,
+        "ucat": ucat,
+    }
 
 
 @tim
@@ -991,19 +1201,89 @@ def optimizeDist6(args, ds):
     # 3) categorize by peakWater (kmeans) + remove tiny classes + save Cat
     args, ds = categorize_water_classes(args, ds)
 
-    if args.writeSampleMap:
-        fileSampleMap_root = os.path.join(args.dirTempPol, "SampleMap_")
-        generate_initial_sample_maps(
-            args, ds,
-            fileSampleMap_root,
-            showProg=args.showProg
-        )
+    # 4) per-category sample map + init dist fitting + category screening
+    fileSampleMap_root = os.path.join(args.dirTempPol, "SampleMap_")
+
+    out = generate_initial_sample_maps(
+        args=args,
+        ds=ds,
+        fileSampleMap_root=fileSampleMap_root,
+        dirTempPol=args.dirTempPol,
+        maxENL=args.maxENL,
+        thKLD=args.thKLD,
+        thNSE=args.thNSE,
+        thR2=args.thR2,
+        save_sample_map=args.writeSampleMap,
+        save_sample_dist=getattr(args, "writeSampleDist", False),
+        showProg=args.showProg,
+    )
+
+    # 把关键结果写回 ds，保持 MATLAB 风格“后续函数能直接用 ds.xxx”
+    ds.sigma2 = out["sigma2"]
+    ds.n_est = out["n_est"]
+    ds.binWidth = out["binWidth"]
+    ds.mKLD = out["mKLD"]
+    ds.mNSE = out["mNSE"]
+    ds.mR2 = out["mR2"]
+    ds.thProb = out["thProb"]
+    ds.maskInvalidCat = out["maskInvalidCat"]
+    ds.ucat = out["ucat"]
+    ds.pol_water_by_cat = out["pol_water_by_cat"]
 
     return args, ds
 
 
 @tim
 def dist_th(args, ds):
+    """
+    Python replacement of MATLAB dist_th (first ~200 lines):
+      - dispatch SBA windows
+      - collect per-window thProbOpt/catOpt/thI_low into matrices
+
+    Outputs stored into ds:
+      ds.matThProb: (nR, nC, nCats)
+      ds.matCat:    (nR, nC, nCats) bool
+      ds.matThI_low:(nR, nC)
+    """
+    print("dist_th: packing SBA windows and dispatching tasks...")
+
+    # from Binary_classification -> get_block
+    nR = int(args.nR)
+    nC = int(args.nC)
+
+    # class count (MATLAB nClasses = length(C))
+    # Here: C == sigma2 array
+    nCats = int(len(ds.sigma2))
+
+    # allocate outputs (MATLAB matThProb/matCat and matThI(:,:,end) for low th)
+    matThProb = np.zeros((nR, nC, nCats), dtype=float)
+    matCat = np.zeros((nR, nC, nCats), dtype=bool)
+    matThI_low = np.zeros((nR, nC), dtype=float)
+    matStatus = np.zeros((nR, nC), dtype=bool)  # MATLAB matStatus
+
+    # build tasks for all tiles (you can later skip by matStatus if you add resume logic)
+    tasks = []
+    for iR in range(nR):
+        for iC in range(nC):
+            tasks.append(delayed(dist_th_window_worker)(args, ds, iR, iC))
+
+    # compute (use whatever scheduler/client you already started outside)
+    results = dask.compute(*tasks)
+
+    # collect
+    for (iR, iC, thProbOpt, catOpt, thI_low) in results:
+        matThProb[iR, iC, :] = thProbOpt
+        matCat[iR, iC, :] = catOpt
+        matThI_low[iR, iC] = thI_low
+        matStatus[iR, iC] = True
+
+    # stash into ds for later steps (interpolation / threshold map construction)
+    ds.matThProb = matThProb
+    ds.matCat = matCat
+    ds.matThI_low = matThI_low
+    ds.matStatus = matStatus
+
+    print("dist_th: window-wise thresholding done.")
     return args, ds
 
 
@@ -1024,7 +1304,7 @@ def Binary_classification(args, ds):
 
         args, ds = optimizeDist6(args, ds)
         # TESTING
-        sys.exit()
+        #sys.exit()
 
         args, ds = dist_th(args, ds)
 
