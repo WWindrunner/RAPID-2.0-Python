@@ -125,13 +125,21 @@ def filepathreader(ds, varnames, infilepath, chunks):
 def get_src(filepath, args):
     # Open the GeoTIFF file using rasterio
     with rasterio.open(filepath) as src:
-        args.ref_src = src
+        args.refmeta = src.meta.copy()
+        args.transform = src.transform
+        args.crs_wkt = src.crs.to_wkt() if src.crs else None
+        args.height = src.height
+        args.width = src.width
+        args.nodata = src.nodata
+        args.count = src.count
+
+    args.ref_src = None
     return args
 
 
 def set_nan(ds, args):
-    ds.img_lp = da.where(ds.img_lp == args.ref_src.nodata, 0, ds.img_lp)
-    ds.img_cp = da.where(ds.img_cp == args.ref_src.nodata, 0, ds.img_cp)
+    ds.img_lp = da.where(ds.img_lp == args.nodata, 0, ds.img_lp)
+    ds.img_cp = da.where(ds.img_cp == args.nodata, 0, ds.img_cp)
     print('set nan for BRD noise by erosion with 5 pixels')
     valid_mask = da.where(ds.img_lp > 0, 1, 0)
     valid_BRD_mask = ndimage.binary_erosion(valid_mask, iterations=5)
@@ -186,12 +194,12 @@ def Load_Data(args):
         print(infilepath)
         if args.datamode != 'mem':
             ds = filepathreader(ds, args.varnames, infilepath, args.chunks)
+        args = get_src(infilepath[0], args)
     else:
         infilepath = filepath
         args = get_src(filepath[0], args)
         args.tempfiles = []
         ds = filepathreader(ds, args.varnames, infilepath, args.chunks)
-    args.refmeta = args.ref_src.meta.copy()
     # Output are binary mask so just one band
     args.refmeta.update(count=1)
     # Duplicate ds.img_lp to ds.img_cp if ds.img_cp is not exist, 08-05-2023

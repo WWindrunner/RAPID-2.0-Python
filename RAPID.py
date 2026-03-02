@@ -206,6 +206,44 @@ def dup_args(args, filepath, granuele_name, wotif=None):
     return args_new
 
 
+def setup_dask_from_slurm():
+    """
+    Use SLURM_CPUS_PER_TASK to start a LocalCluster so dask.compute uses processes.
+    Safe on a single node.
+    """
+    import os
+    try:
+        from dask.distributed import Client, LocalCluster
+    except Exception as e:
+        print("WARNING: dask.distributed not available, fallback to default dask scheduler.", e)
+        return None
+
+    ncpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
+    mem_mb = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
+    # 80G：mem_total_gb = 80
+
+    # test 8 workers
+    n_workers = int(os.environ.get("DASK_NWORKERS", "8"))
+    threads_per_worker = int(os.environ.get("DASK_THREADS_PER_WORKER", "1"))
+
+    # 9GB per worker
+    mem_limit = os.environ.get("DASK_MEM_LIMIT", "9GB")
+
+    cluster = LocalCluster(
+        n_workers=n_workers,
+        threads_per_worker=threads_per_worker,
+        processes=True,
+        memory_limit=mem_limit,
+        dashboard_address=":8787",
+    )
+    client = Client(cluster)
+    print("Dask LocalCluster started.")
+    print("  workers:", n_workers, "threads/worker:", threads_per_worker)
+    print("  memory_limit:", mem_limit)
+    print("  dashboard:", client.dashboard_link)
+    return client
+
+
 @tim
 def RAPID(*args, **kwargs):
     if len(args) > 1 and len(args) <= 4:
@@ -240,6 +278,9 @@ def RAPID(*args, **kwargs):
     filepath_list = args.filepath_list
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
+
+    # dask
+    client = setup_dask_from_slurm()
 
     # Initial args list for each image
     args_list = []

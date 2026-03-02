@@ -7,6 +7,7 @@ from scipy.stats.distributions import chi2
 from scipy.special import gamma, iv
 import rasterio
 import csv
+import sys
 from sklearn.preprocessing import StandardScaler
 from sklearn.mixture import GaussianMixture
 from scipy.stats import multivariate_normal
@@ -210,6 +211,8 @@ def select_water_tiles(args, ds):
             water_prob = ds.water_occurrence[row0:row0 + h, col0:col0 + w].compute()
             LCC = ds.land_cover[row0:row0 + h, col0:col0 + w].compute()
             I = ds.img_lp[row0:row0 + h, col0:col0 + w].compute()
+            water_prob = water_prob.astype(np.float64, copy=False)
+            water_prob[water_prob >= 255] = np.nan
 
             # ocean mask is optional: if ds.ocean_mask missing, treat as all non-ocean
             if hasattr(ds, "ocean_mask") and ds.ocean_mask is not None:
@@ -218,7 +221,7 @@ def select_water_tiles(args, ds):
             else:
                 basinMask = np.ones_like(I, dtype=bool)
 
-            basinMask = basinMask & np.isfinite(I) & (I > 0) & (LCC == int(args.codePW))
+            basinMask = basinMask & np.isfinite(I) & (I > 0) #& (LCC == int(args.codePW))
             if np.count_nonzero(basinMask) == 0:
                 continue
 
@@ -725,6 +728,34 @@ def findRange_bimodality(args, ds):
     args.thIPrc = getattr(args, "thIPrc", 50)
     args.thFrac = getattr(args, "thFrac", 1 - args.thIPrc / 100.0 + 0.1)
     args.binWidthInit = getattr(args, "binWidthInit", 0.2)
+    
+    # pick a small patch from the center
+    #rows, cols = ds.img_lp.shape
+    #r0 = rows//2
+    #c0 = cols//2
+    #H = 512
+    #W = 512
+
+    #I_patch = ds.img_lp[r0:r0+H, c0:c0+W].compute()
+    #P_patch = ds.water_occurrence[r0:r0+H, c0:c0+W].compute()
+    #L_patch = ds.land_cover[r0:r0+H, c0:c0+W].compute()
+    #O_patch = ds.ocean_mask[r0:r0+H, c0:c0+W].compute() if hasattr(ds, "ocean_mask") else None
+
+    #print("img_lp: min/max/finite_ratio/>0_ratio",
+    #      np.nanmin(I_patch), np.nanmax(I_patch),
+    #      np.isfinite(I_patch).mean(),
+    #      (I_patch>0).mean())
+
+    #print("water_occurrence: min/max/unique_sample",
+    #      np.nanmin(P_patch), np.nanmax(P_patch),
+    #      np.unique(P_patch[~np.isnan(P_patch)])[:20])
+
+    #print("land_cover: unique_sample",
+    #      np.unique(L_patch[~np.isnan(L_patch)])[:30])
+
+    #if O_patch is not None:
+    #    vals, cnts = np.unique(O_patch[~np.isnan(O_patch)], return_counts=True)
+    #    print("ocean_mask unique counts (sample patch):", dict(zip(vals.tolist(), cnts.tolist())))
 
     if not getattr(args, "fileSBAInit", None):
         if not getattr(args, "OUT_PATH", None):
@@ -851,6 +882,7 @@ def createSampleMapSBA(
             # MATLAB condition: water_prob > thProb(w) & I>0 & I_dB < Iu(w)
             I = np.asarray(I, dtype=np.float64)
             water_prob = np.asarray(water_prob, dtype=np.float64)
+            water_prob[water_prob >= 255] = np.nan
 
             # avoid log10 warnings
             valid_I = np.isfinite(I) & (I > 0)
@@ -970,6 +1002,8 @@ def Binary_classification(args, ds):
         args.nR, args.nC, args.r0, args.c0, args.nRows, args.nCols = nR, nC, r0, c0, nRows, nCols
 
         args, ds = optimizeDist6(args, ds)
+        # TESTING
+        sys.exit()
 
         args, ds = dist_th(args, ds)
 
