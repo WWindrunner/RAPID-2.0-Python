@@ -208,39 +208,80 @@ def dup_args(args, filepath, granuele_name, wotif=None):
 
 def setup_dask_from_slurm():
     """
-    Use SLURM_CPUS_PER_TASK to start a LocalCluster so dask.compute uses processes.
-    Safe on a single node.
+    Setup Dask LocalCluster based on SLURM environment.
+
+    Default: THREAD MODE (recommended for bbox + numpy sharing)
+    Can switch to process mode by setting:
+        export DASK_USE_PROCESSES=1
     """
+
     import os
     try:
         from dask.distributed import Client, LocalCluster
     except Exception as e:
-        print("WARNING: dask.distributed not available, fallback to default dask scheduler.", e)
+        print("WARNING: dask.distributed not available, fallback to default scheduler.", e)
         return None
 
+    # ---- SLURM resources ----
     ncpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
     mem_mb = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
-    # 80G：mem_total_gb = 80
 
-    # test 8 workers
-    n_workers = int(os.environ.get("DASK_NWORKERS", "8"))
-    threads_per_worker = int(os.environ.get("DASK_THREADS_PER_WORKER", "1"))
+    # ---- Mode switch ----
+    use_processes = os.environ.get("DASK_USE_PROCESSES", "0") == "1"
 
-    # 9GB per worker
-    mem_limit = os.environ.get("DASK_MEM_LIMIT", "9GB")
+    if not use_processes:
+        # ==========================
+        # THREAD MODE (recommended)
+        # ==========================
+        n_workers = 1
+        threads_per_worker = ncpus
 
-    cluster = LocalCluster(
-        n_workers=n_workers,
-        threads_per_worker=threads_per_worker,
-        processes=True,
-        memory_limit=mem_limit,
-        dashboard_address=":8787",
-    )
-    client = Client(cluster)
-    print("Dask LocalCluster started.")
-    print("  workers:", n_workers, "threads/worker:", threads_per_worker)
-    print("  memory_limit:", mem_limit)
-    print("  dashboard:", client.dashboard_link)
+        # Give most memory to single process
+        if mem_mb > 0:
+            mem_limit = f"{int(mem_mb * 0.85)}MB"
+        else:
+            mem_limit = "70GB"
+
+        cluster = LocalCluster(
+            n_workers=n_workers,
+            threads_per_worker=threads_per_worker,
+            processes=False,                # KEY DIFFERENCE
+            memory_limit=mem_limit,
+            dashboard_address=":8787",
+        )
+
+        client = Client(cluster)
+
+        print("Dask LocalCluster started (THREAD MODE).")
+        print("  workers:", n_workers)
+        print("  threads_per_worker:", threads_per_worker)
+        print("  memory_limit:", mem_limit)
+        print("  dashboard:", client.dashboard_link)
+
+    else:
+        # ==========================
+        # PROCESS MODE (fallback)
+        # ==========================
+        n_workers = int(os.environ.get("DASK_NWORKERS", str(ncpus)))
+        threads_per_worker = int(os.environ.get("DASK_THREADS_PER_WORKER", "1"))
+        mem_limit = os.environ.get("DASK_MEM_LIMIT", "4GB")
+
+        cluster = LocalCluster(
+            n_workers=n_workers,
+            threads_per_worker=threads_per_worker,
+            processes=True,
+            memory_limit=mem_limit,
+            dashboard_address=":8787",
+        )
+
+        client = Client(cluster)
+
+        print("Dask LocalCluster started (PROCESS MODE).")
+        print("  workers:", n_workers)
+        print("  threads_per_worker:", threads_per_worker)
+        print("  memory_limit:", mem_limit)
+        print("  dashboard:", client.dashboard_link)
+
     return client
 
 

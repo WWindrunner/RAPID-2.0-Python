@@ -531,21 +531,18 @@ def validate_gmm(RH, pc, mu, sigma, Iu, thPC=(0.001, 0.999), thAD=0.0, thRH=0.5,
 # Worker task (init_find_bimod_th_worker equivalent)
 # -----------------------------
 
-def _init_bimod_one_window(args, ds, w):
-    """
-    One dask task for one window.
-    Uses ds.img_lp + ds.water_occurrence, plus ds.ocean_mask already applied earlier in your seed selection.
-    """
-    thOcc = float(np.asarray(ds.thOcc)[w])
-    r0 = int(np.asarray(ds.r0Sel)[w])
-    c0 = int(np.asarray(ds.c0Sel)[w])
-    nRows = int(np.asarray(ds.nRowsSel)[w])
-    nCols = int(np.asarray(ds.nColsSel)[w])
+def _init_bimod_one_window_from_bbox(args,
+                                    img_bbox, wo_bbox,
+                                    r_min, c_min,
+                                    thOcc, r0, c0, nRows, nCols, w):
+    rr0 = int(r0) - int(r_min)
+    cc0 = int(c0) - int(c_min)
 
-    I_lin = ds.img_lp[r0:r0+nRows, c0:c0+nCols].compute()
-    probW = ds.water_occurrence[r0:r0+nRows, c0:c0+nCols].compute()
+    I_lin = img_bbox[rr0:rr0 + int(nRows), cc0:cc0 + int(nCols)]
+    probW = wo_bbox [rr0:rr0 + int(nRows), cc0:cc0 + int(nCols)]
 
-    Iu, pc, mu, sigma, RH = threshold_gmm_window(I_lin, probW, thOcc, waterOnly=False)
+    Iu, pc, mu, sigma, RH = threshold_gmm_window(I_lin, probW, float(thOcc), waterOnly=False)
+
     maskValid, AD = validate_gmm(
         RH, pc, mu, sigma, Iu,
         thPC=tuple(args.thPC),
@@ -556,40 +553,55 @@ def _init_bimod_one_window(args, ds, w):
     )
 
     return {
-        "w": w,
+        "w": int(w),
         "Iu": Iu,
         "pc": pc,
         "mu": mu,
         "sigma": sigma,
         "RH": RH,
         "AD": AD,
-        "valid": maskValid,
+        "valid": bool(maskValid),
     }
 
 
 def run_init_bimodality_dask(args, ds):
+    # ---- 准备 window 参数 ----
     r0s = np.asarray(ds.r0Sel).astype(np.int64).ravel()
     c0s = np.asarray(ds.c0Sel).astype(np.int64).ravel()
     nrs = np.asarray(ds.nRowsSel).astype(np.int64).ravel()
     ncs = np.asarray(ds.nColsSel).astype(np.int64).ravel()
     ths = np.asarray(ds.thOcc).astype(np.float64).ravel()
 
-    nWindows = r0s.size
+    nWindows = int(r0s.size)
     if nWindows == 0:
         return args, ds
 
-    # 1) 联合 bbox（最小覆盖）
+    # ---- 联合 bbox ----
     r_min = int(r0s.min())
     c_min = int(c0s.min())
     r_max = int((r0s + nrs).max())
     c_max = int((c0s + ncs).max())
 
-    # 2) 一次性把 bbox 子区域 compute 成 numpy
-    # 注意：这里不会创建任何新的 dask task；只是把必要数据拉到本 worker
+    # ---- 只 compute 两次：把 bbox 子区域拉成 numpy ----
+    # 这一步发生在当前 worker/进程内（线程模式下就是同一进程）
     img_bbox = ds.img_lp[r_min:r_max, c_min:c_max].compute()
     wo_bbox = ds.water_occurrence[r_min:r_max, c_min:c_max].compute()
 
-    # 3) 分配输出
+    # ---- 并行 window：delayed 但不再 compute 子数组 ----
+    tasks = [
+        dask.delayed(_init_bimod_one_window_from_bbox)(
+            args,
+            img_bbox, wo_bbox,
+            r_min, c_min,
+            float(ths[w]), int(r0s[w]), int(c0s[w]),
+            int(nrs[w]), int(ncs[w]),
+            int(w)
+        )
+        for w in range(nWindows)
+    ]
+    results = dask.compute(*tasks)
+
+    # ---- 分配输出数组 ----
     Iu = np.full((nWindows,), np.nan, dtype=np.float64)
     RH = np.full((nWindows,), np.nan, dtype=np.float64)
     AD = np.full((nWindows,), np.nan, dtype=np.float64)
@@ -598,47 +610,23 @@ def run_init_bimodality_dask(args, ds):
     sigma = np.full((nWindows, 2), np.nan, dtype=np.float64)
     valid = np.zeros((nWindows,), dtype=bool)
 
-    # 4) 纯 numpy window 循环（没有 dask / 没有 compute）
-    for w in range(nWindows):
-        r0 = int(r0s[w]);
-        c0 = int(c0s[w])
-        nRows = int(nrs[w]);
-        nCols = int(ncs[w])
-        thOcc = float(ths[w])
+    for r in results:
+        w = int(r["w"])
+        Iu[w] = float(r["Iu"]) if np.isfinite(r["Iu"]) else np.nan
+        RH[w] = float(r["RH"]) if np.isfinite(r["RH"]) else np.nan
+        AD[w] = float(r["AD"]) if np.isfinite(r["AD"]) else np.nan
+        pc[w, :] = np.asarray(r["pc"], dtype=np.float64).reshape(2)
+        mu[w, :] = np.asarray(r["mu"], dtype=np.float64).reshape(2)
+        sigma[w, :] = np.asarray(r["sigma"], dtype=np.float64).reshape(2)
+        valid[w] = bool(r["valid"])
 
-        rr0 = r0 - r_min
-        cc0 = c0 - c_min
-
-        I_lin = img_bbox[rr0:rr0 + nRows, cc0:cc0 + nCols]
-        probW = wo_bbox[rr0:rr0 + nRows, cc0:cc0 + nCols]
-
-        Iu_w, pc_w, mu_w, sigma_w, RH_w = threshold_gmm_window(
-            I_lin, probW, thOcc, waterOnly=False
-        )
-        maskValid_w, AD_w = validate_gmm(
-            RH_w, pc_w, mu_w, sigma_w, Iu_w,
-            thPC=tuple(args.thPC),
-            thAD=float(args.thAD),
-            thRH=float(args.thRH),
-            thDist2Mean=float(args.thDist2Mean),
-            separately=True
-        )
-
-        if np.isfinite(Iu_w):
-            Iu[w] = float(Iu_w)
-        RH[w] = float(RH_w) if np.isfinite(RH_w) else np.nan
-        AD[w] = float(AD_w) if np.isfinite(AD_w) else np.nan
-        pc[w, :] = np.asarray(pc_w, dtype=np.float64).reshape(2)
-        mu[w, :] = np.asarray(mu_w, dtype=np.float64).reshape(2)
-        sigma[w, :] = np.asarray(sigma_w, dtype=np.float64).reshape(2)
-        valid[w] = bool(maskValid_w)
-
-    # 5) 过滤逻辑保持不变
+    # ---- MATLAB: maskValid = imag(Iu)==0; 这里用 finite 代替 ----
     maskIuReal = np.isfinite(Iu)
-    maskKeep = maskIuReal
+    maskKeep = maskIuReal  # 或：maskKeep = maskIuReal & valid
 
     mu1 = mu[:, 0]
 
+    # ---- 同步过滤 ds 的相关字段（保持你原逻辑）----
     for name, arr in [
         ("thOcc", np.asarray(ds.thOcc).reshape(-1)),
         ("r0Sel", np.asarray(ds.r0Sel).reshape(-1)),
@@ -662,6 +650,7 @@ def run_init_bimodality_dask(args, ds):
     ds.AD = AD[maskKeep]
     ds.valid_bimod = valid[maskKeep]
 
+    # ---- 保存 UnCat ----
     if getattr(args, "fileSBAInitUnCat", None):
         os.makedirs(os.path.dirname(args.fileSBAInitUnCat) or ".", exist_ok=True)
         savemat(args.fileSBAInitUnCat, {
