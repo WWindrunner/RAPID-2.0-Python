@@ -561,7 +561,20 @@ def run_init_bimodality_dask(args, ds):
         )
         for w in range(nWindows)
     ]
-    results = dask.compute(*tasks)
+    print("[run_init_bimodality] dask compute")
+    import time
+    batch = 30
+    results = []
+    t0 = time.perf_counter()
+
+    for i in range(0, len(tasks), batch):
+        t_batch0 = time.perf_counter()
+        batch_tasks = tasks[i:i+batch]
+        batch_res = dask.compute(*batch_tasks)
+        t_batch1 = time.perf_counter()
+        results.extend(batch_res)
+        print(f"[run_init_bimodality] batch {i//batch+1}: {i+len(batch_tasks)}/{len(tasks)} done, batch_time={t_batch1-t_batch0:.3f}s, total_elapsed={t_batch1-t0:.1f}s")
+    #results = dask.compute(*tasks)
 
     # ---- 分配输出数组 ----
     Iu = np.full((nWindows,), np.nan, dtype=np.float64)
