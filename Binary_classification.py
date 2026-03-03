@@ -19,105 +19,9 @@ import scipy.ndimage.filters as filters
 from scipy.ndimage import median_filter
 from scipy.io import savemat, loadmat
 from Initial_sample import *
-from typing import Tuple
 from rasterio.windows import Window
-from Dist_th import dist_th_window_worker
-from Statistics import KLD_chi2_frm_sample, validate_gmm
-
-
-def get_block(
-        rowsImage: int,
-        colsImage: int,
-        block_size: int,
-        overlap: int = 0,
-        offset: bool = False,
-        keep_size: bool = False
-) -> Tuple[int, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int]:
-    """
-    Same logic as your file-based get_block, but uses provided image shape.
-    Conventions:
-      - Output r0, c0 are 0-based (top-left pixel offsets).
-      - If overlap==0: r0 shape (nR,), c0 shape (nC,)
-      - If overlap>0: r0 shape (nR,2), c0 shape (nC,2) (read/process columns)
-    """
-    rowsImage = int(rowsImage)
-    colsImage = int(colsImage)
-
-    if overlap > 0 and offset:
-        raise ValueError("cannot set non-zero overlap with offset")
-
-    hasReminder = False
-    offsetGrids = int(round(block_size / 2))
-
-    if offset:
-        rowsImage1 = rowsImage - offsetGrids
-        colsImage1 = colsImage - offsetGrids
-        nR = int(np.floor(rowsImage1 / block_size) + (rowsImage1 % block_size > 0) + 1)
-        nC = int(np.floor(colsImage1 / block_size) + (colsImage1 % block_size > 0) + 1)
-        if rowsImage1 % block_size > 0:
-            hasReminder = True
-    else:
-        nR = int(np.floor(rowsImage / block_size) + (rowsImage % block_size > 0))
-        nC = int(np.floor(colsImage / block_size) + (colsImage % block_size > 0))
-        if rowsImage % block_size > 0:
-            hasReminder = True
-
-    if overlap == 0:
-        if offset:
-            r0 = np.array([0] + [k * block_size + offsetGrids for k in range(nR - 1)], dtype=np.int64)
-            c0 = np.array([0] + [k * block_size + offsetGrids for k in range(nC - 1)], dtype=np.int64)
-
-            nRows = np.minimum(rowsImage - r0, block_size).astype(np.int64)
-            nCols = np.minimum(colsImage - c0, block_size).astype(np.int64)
-            nRows[0] = offsetGrids
-            nCols[0] = offsetGrids
-        else:
-            r0 = (np.arange(nR, dtype=np.int64) * block_size)
-            c0 = (np.arange(nC, dtype=np.int64) * block_size)
-            nRows = np.minimum(rowsImage - r0, block_size).astype(np.int64)
-            nCols = np.minimum(colsImage - c0, block_size).astype(np.int64)
-    else:
-        r0 = np.zeros((nR, 2), dtype=np.int64)
-        r0[:, 0] = np.arange(nR, dtype=np.int64) * block_size - overlap
-        r0[0, 0] = 0
-        r0[:, 1] = np.arange(nR, dtype=np.int64) * block_size
-
-        nRows = np.zeros((nR, 2), dtype=np.int64)
-        nRows[:, 0] = np.minimum(block_size + overlap * 2, rowsImage - r0[:, 0])
-        nRows[0, 0] = min(block_size + overlap, rowsImage)
-        nRows[-1, 0] = min(rowsImage - r0[-1, 0], block_size + overlap)
-        nRows[:, 1] = np.minimum(block_size, rowsImage - r0[:, 1])
-        nRows[-1, 1] = min(rowsImage - r0[-1, 1], block_size)
-
-        c0 = np.zeros((nC, 2), dtype=np.int64)
-        c0[:, 0] = np.arange(nC, dtype=np.int64) * block_size - overlap
-        c0[0, 0] = 0
-        c0[:, 1] = np.arange(nC, dtype=np.int64) * block_size
-
-        nCols = np.zeros((nC, 2), dtype=np.int64)
-        nCols[:, 0] = np.minimum(block_size + overlap * 2, colsImage - c0[:, 0])
-        nCols[0, 0] = min(block_size + overlap, colsImage)
-        nCols[-1, 0] = min(colsImage - c0[-1, 0], block_size + overlap)
-        nCols[:, 1] = np.minimum(block_size, colsImage - c0[:, 1])
-        nCols[-1, 1] = min(colsImage - c0[-1, 1], block_size)
-
-    if keep_size and hasReminder:
-        if overlap == 0:
-            r0[-1] = max(0, rowsImage - block_size)
-            c0[-1] = max(0, colsImage - block_size)
-            nRows[-1] = min(block_size, rowsImage)
-            nCols[-1] = min(block_size, colsImage)
-        else:
-            r0[-1, 0] = max(0, rowsImage - block_size - 2 * overlap)
-            r0[-1, 1] = r0[-2, 1] + block_size
-            c0[-1, 0] = max(0, colsImage - block_size - 2 * overlap)
-            c0[-1, 1] = c0[-2, 1] + block_size
-            nRows[-1, 0] = block_size + 2 * overlap
-            nRows[-1, 1] = max(1, rowsImage - r0[-1, 1])
-            nCols[-1, 0] = block_size + 2 * overlap
-            nCols[-1, 1] = max(1, colsImage - c0[-1, 1])
-
-    return nR, nC, r0, c0, nRows, nCols, rowsImage, colsImage
+from Dist_th import dist_th_window_worker, dist_th_postprocess
+from Statistics import KLD_chi2_frm_sample, validate_gmm, get_block
 
 
 def _first_col(x):
@@ -1234,7 +1138,7 @@ def generate_initial_sample_maps(
     for idx0 in indRemove:
         i = idx0 + 1
         fileSampleMap = f"{fileSampleMap_root}{i}.tif"
-        fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.fig")
+        fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.png")
         if os.path.exists(fileSampleMap):
             os.remove(fileSampleMap)
         if os.path.exists(fileSampleDist):
@@ -1338,50 +1242,96 @@ def dist_th(args, ds):
       ds.matCat:    (nR, nC, nCats) bool
       ds.matThI_low:(nR, nC)
     """
-    print("dist_th: packing SBA windows and dispatching tasks...")
+    print("[dist_th] packing SBA windows and dispatching tasks...")
 
+    # --- normalize get_block outputs to 1D (process col=1) ---
     args.r0 = _block_col(args.r0, 1).astype(np.int64, copy=False)
     args.nRows = _block_col(args.nRows, 1).astype(np.int64, copy=False)
     args.c0 = _block_col(args.c0, 1).astype(np.int64, copy=False)
     args.nCols = _block_col(args.nCols, 1).astype(np.int64, copy=False)
 
-    # from Binary_classification -> get_block
     nR = int(args.nR)
     nC = int(args.nC)
 
-    # class count (MATLAB nClasses = length(C))
-    # Here: C == sigma2 array
-    nCats = int(len(ds.sigma2))
+    # --- small per-run params from optimizeDist6 ---
+    sigma2 = np.asarray(ds.sigma2, dtype=float).reshape(-1)
+    ENL = np.asarray(ds.n_est, dtype=float).reshape(-1)
+    binW = np.asarray(ds.binWidth, dtype=float).reshape(-1)
 
-    # allocate outputs (MATLAB matThProb/matCat and matThI(:,:,end) for low th)
-    matThProb = np.zeros((nR, nC, nCats), dtype=float)
-    matCat = np.zeros((nR, nC, nCats), dtype=bool)
-    matThI_low = np.zeros((nR, nC), dtype=float)
-    matStatus = np.zeros((nR, nC), dtype=bool)  # MATLAB matStatus
-
-    # build tasks for all tiles (you can later skip by matStatus if you add resume logic)
     tasks = []
     for iR in range(nR):
-        for iC in range(nC):
-            tasks.append(delayed(dist_th_window_worker)(args, ds, iR, iC))
+        r0 = int(args.r0[iR])
+        nr = int(args.nRows[iR])
 
-    # compute (use whatever scheduler/client you already started outside)
+        for iC in range(nC):
+            c0 = int(args.c0[iC])
+            nc = int(args.nCols[iC])
+
+            # IMPORTANT: pass dask array slices directly (NO .compute here)
+            Iwin = ds.img_lp[r0:r0 + nr, c0:c0 + nc]
+
+            if hasattr(ds, "land_cover"):
+                lcwin = ds.land_cover[r0:r0 + nr, c0:c0 + nc]
+            else:
+                lcwin = None
+
+            tasks.append(
+                dask.delayed(dist_th_window_worker)(
+                    args, iR, iC, Iwin, lcwin, sigma2, ENL, binW
+                )
+            )
+
+    # compute all windows
     results = dask.compute(*tasks)
 
-    # collect
-    for (iR, iC, thProbOpt, catOpt, thI_low) in results:
+    # class count (MATLAB nClasses = length(C); here nCats = len(sigma2))
+    nCats = int(sigma2.size)
+
+    # allocate outputs (MATLAB: matThProb, matCat, matThI(:,:,end) for low class)
+    matThProb = np.zeros((nR, nC, nCats), dtype=np.float32)
+    matCat = np.zeros((nR, nC, nCats), dtype=bool)
+    matThI_low = np.zeros((nR, nC), dtype=np.float32)
+    matStatus = np.zeros((nR, nC), dtype=bool)
+
+    # results is a tuple of return-values (because you did dask.compute(*tasks))
+    # each element: (iR, iC, thProbOpt(nCats,), catOpt(nCats,), thI_low)
+    for item in results:
+        if item is None:
+            continue
+
+        iR, iC, thProbOpt, catOpt, thI_low = item
+        iR = int(iR)
+        iC = int(iC)
+
+        thProbOpt = np.asarray(thProbOpt, dtype=np.float32).reshape(-1)
+        catOpt = np.asarray(catOpt, dtype=bool).reshape(-1)
+
+        # safety: tolerate worker returning different length
+        if thProbOpt.size != nCats:
+            tmp = np.zeros((nCats,), dtype=np.float32)
+            tmp[: min(nCats, thProbOpt.size)] = thProbOpt[: min(nCats, thProbOpt.size)]
+            thProbOpt = tmp
+        if catOpt.size != nCats:
+            tmpb = np.zeros((nCats,), dtype=bool)
+            tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
+            catOpt = tmpb
+
         matThProb[iR, iC, :] = thProbOpt
         matCat[iR, iC, :] = catOpt
-        matThI_low[iR, iC] = thI_low
+        matThI_low[iR, iC] = np.float32(thI_low)
         matStatus[iR, iC] = True
 
-    # stash into ds for later steps (interpolation / threshold map construction)
+    # stash into ds for later steps (interpolation / threshold map construction / segmentation)
     ds.matThProb = matThProb
     ds.matCat = matCat
     ds.matThI_low = matThI_low
     ds.matStatus = matStatus
 
-    print("dist_th: window-wise thresholding done.")
+    print("[dist_th] window-wise thresholding done.")
+
+    args, ds = dist_th_postprocess(args, ds)
+    print("[dist_th] done")
+
     return args, ds
 
 

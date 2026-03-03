@@ -1,5 +1,161 @@
 import numpy as np
 from scipy.stats import chi2
+from typing import Tuple
+from scipy.special import gammainc, gamma
+
+
+def chi2_truncated_mean(df: float, a: np.ndarray) -> np.ndarray:
+    """
+    E[X | X <= a] for X ~ ChiSquare(df), vectorized.
+    Uses lower incomplete gamma:
+      E[X | X<=a] = 2 * γ(k+1, a/2) / γ(k, a/2),  k=df/2
+    """
+    a = np.asarray(a, dtype=float)
+    k = df / 2.0
+    x = a / 2.0
+
+    # γ(k,x) = gammainc(k,x) * Γ(k)
+    gk = gammainc(k, x) * gamma(k)
+    gk1 = gammainc(k + 1.0, x) * gamma(k + 1.0)
+
+    out = np.full_like(a, np.nan, dtype=float)
+    mask = (a > 0) & np.isfinite(a) & (gk > 0) & np.isfinite(gk) & np.isfinite(gk1)
+    out[mask] = 2.0 * gk1[mask] / gk[mask]
+    return out
+
+
+def build_Iu_and_meanTransact(thProbs: np.ndarray, ENL: np.ndarray, C: np.ndarray):
+    """
+    Port of MATLAB dist_th_worker precompute:
+      thProbs=0.6:0.02:0.99
+      Iu(:,cat)=chi2inv(thProbs,2*n(cat))*C(cat)/(2*n(cat))
+      meanTransact = E[I | I<=Iu_low(p)] / p   (lowest class only)
+    Returns:
+      Iu shape (nProbs, nCats)
+      meanTransact shape (nProbs,)
+      low_class (int)
+    """
+    thProbs = np.asarray(thProbs, dtype=float).reshape(-1)
+    ENL = np.asarray(ENL, dtype=float).reshape(-1)
+    C = np.asarray(C, dtype=float).reshape(-1)
+
+    nCats = int(C.size)
+    nProbs = int(thProbs.size)
+
+    Iu = np.full((nProbs, nCats), np.nan, dtype=float)
+
+    for cat in range(nCats):
+        df = 2.0 * ENL[cat]
+        Xu = chi2.ppf(thProbs, df=df)                     # chi2inv
+        Iu[:, cat] = Xu * C[cat] / (2.0 * ENL[cat])      # Xu*C/(2*n)
+
+    low_class = int(np.nanargmin(C))
+
+    # lowest class truncated mean
+    df_low = 2.0 * ENL[low_class]
+    Xu_low = chi2.ppf(thProbs, df=df_low)
+    s_low = C[low_class] / (2.0 * ENL[low_class])       # I = s*X
+
+    EX_cond = chi2_truncated_mean(df_low, Xu_low)       # E[X | X<=Xu]
+    EI_cond = s_low * EX_cond                           # E[I | I<=Iu]
+    meanTransact = EI_cond / thProbs                    # MATLAB divides by thProbs'
+
+    return Iu, meanTransact, low_class
+
+
+def get_block(
+        rowsImage: int,
+        colsImage: int,
+        block_size: int,
+        overlap: int = 0,
+        offset: bool = False,
+        keep_size: bool = False
+) -> Tuple[int, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int]:
+    """
+    Same logic as your file-based get_block, but uses provided image shape.
+    Conventions:
+      - Output r0, c0 are 0-based (top-left pixel offsets).
+      - If overlap==0: r0 shape (nR,), c0 shape (nC,)
+      - If overlap>0: r0 shape (nR,2), c0 shape (nC,2) (read/process columns)
+    """
+    rowsImage = int(rowsImage)
+    colsImage = int(colsImage)
+
+    if overlap > 0 and offset:
+        raise ValueError("cannot set non-zero overlap with offset")
+
+    hasReminder = False
+    offsetGrids = int(round(block_size / 2))
+
+    if offset:
+        rowsImage1 = rowsImage - offsetGrids
+        colsImage1 = colsImage - offsetGrids
+        nR = int(np.floor(rowsImage1 / block_size) + (rowsImage1 % block_size > 0) + 1)
+        nC = int(np.floor(colsImage1 / block_size) + (colsImage1 % block_size > 0) + 1)
+        if rowsImage1 % block_size > 0:
+            hasReminder = True
+    else:
+        nR = int(np.floor(rowsImage / block_size) + (rowsImage % block_size > 0))
+        nC = int(np.floor(colsImage / block_size) + (colsImage % block_size > 0))
+        if rowsImage % block_size > 0:
+            hasReminder = True
+
+    if overlap == 0:
+        if offset:
+            r0 = np.array([0] + [k * block_size + offsetGrids for k in range(nR - 1)], dtype=np.int64)
+            c0 = np.array([0] + [k * block_size + offsetGrids for k in range(nC - 1)], dtype=np.int64)
+
+            nRows = np.minimum(rowsImage - r0, block_size).astype(np.int64)
+            nCols = np.minimum(colsImage - c0, block_size).astype(np.int64)
+            nRows[0] = offsetGrids
+            nCols[0] = offsetGrids
+        else:
+            r0 = (np.arange(nR, dtype=np.int64) * block_size)
+            c0 = (np.arange(nC, dtype=np.int64) * block_size)
+            nRows = np.minimum(rowsImage - r0, block_size).astype(np.int64)
+            nCols = np.minimum(colsImage - c0, block_size).astype(np.int64)
+    else:
+        r0 = np.zeros((nR, 2), dtype=np.int64)
+        r0[:, 0] = np.arange(nR, dtype=np.int64) * block_size - overlap
+        r0[0, 0] = 0
+        r0[:, 1] = np.arange(nR, dtype=np.int64) * block_size
+
+        nRows = np.zeros((nR, 2), dtype=np.int64)
+        nRows[:, 0] = np.minimum(block_size + overlap * 2, rowsImage - r0[:, 0])
+        nRows[0, 0] = min(block_size + overlap, rowsImage)
+        nRows[-1, 0] = min(rowsImage - r0[-1, 0], block_size + overlap)
+        nRows[:, 1] = np.minimum(block_size, rowsImage - r0[:, 1])
+        nRows[-1, 1] = min(rowsImage - r0[-1, 1], block_size)
+
+        c0 = np.zeros((nC, 2), dtype=np.int64)
+        c0[:, 0] = np.arange(nC, dtype=np.int64) * block_size - overlap
+        c0[0, 0] = 0
+        c0[:, 1] = np.arange(nC, dtype=np.int64) * block_size
+
+        nCols = np.zeros((nC, 2), dtype=np.int64)
+        nCols[:, 0] = np.minimum(block_size + overlap * 2, colsImage - c0[:, 0])
+        nCols[0, 0] = min(block_size + overlap, colsImage)
+        nCols[-1, 0] = min(colsImage - c0[-1, 0], block_size + overlap)
+        nCols[:, 1] = np.minimum(block_size, colsImage - c0[:, 1])
+        nCols[-1, 1] = min(colsImage - c0[-1, 1], block_size)
+
+    if keep_size and hasReminder:
+        if overlap == 0:
+            r0[-1] = max(0, rowsImage - block_size)
+            c0[-1] = max(0, colsImage - block_size)
+            nRows[-1] = min(block_size, rowsImage)
+            nCols[-1] = min(block_size, colsImage)
+        else:
+            r0[-1, 0] = max(0, rowsImage - block_size - 2 * overlap)
+            r0[-1, 1] = r0[-2, 1] + block_size
+            c0[-1, 0] = max(0, colsImage - block_size - 2 * overlap)
+            c0[-1, 1] = c0[-2, 1] + block_size
+            nRows[-1, 0] = block_size + 2 * overlap
+            nRows[-1, 1] = max(1, rowsImage - r0[-1, 1])
+            nCols[-1, 0] = block_size + 2 * overlap
+            nCols[-1, 1] = max(1, colsImage - c0[-1, 1])
+
+    return nR, nC, r0, c0, nRows, nCols, rowsImage, colsImage
 
 
 def KLD_chi2_frm_sample(

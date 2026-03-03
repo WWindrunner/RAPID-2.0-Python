@@ -1,8 +1,13 @@
 import numpy as np
+import os
 import dask
-from Statistics import KLD_chi2_frm_sample, validate_gmm
+from Statistics import KLD_chi2_frm_sample, validate_gmm, get_block, build_Iu_and_meanTransact
 from utils import read_window_from_ds
 from scipy.stats import chi2
+import rasterio
+from rasterio.windows import Window
+from rasterio.transform import Affine
+from rasterio.warp import reproject, Resampling
 
 
 def solve4GMM(nmodes: int, I_linear: np.ndarray, mu0=None, std0=None, pc0=None, fileVal: str | None = None):
@@ -328,7 +333,7 @@ def findThProb(
     hasPW: bool,
 ):
     """
-    Port of findThProb.m (wind_inclusive implemented; glacial_exclusive TODO).
+    Port of findThProb.m (wind_inclusive implemented; glacial_exclusive NOT).
 
     Returns:
       found (bool), thProb_out (nCat,), catSel_out (nCat,), thI (float linear)
@@ -373,7 +378,7 @@ def findThProb(
             if (cat == low_class) and (thProbs[t] > 0.6):
                 real_mean = float(np.mean(pol_water))
 
-                if (real_mean < float(meanTransact[t])) and (not bimodalTested):
+                if np.isfinite(meanTransact[t]) and (real_mean < float(meanTransact[t])) and (not bimodalTested):
                     bimodalTested = True
 
                     if runStyle == "wind_inclusive":
@@ -447,82 +452,376 @@ def findThProb(
     return found, thProb_out, catSel_out, float(thI)
 
 
-def dist_th_window_worker(args, ds, iR: int, iC: int):
+def dist_th_window_worker(args, iR, iC, Iwin, lcwin, sigma2, ENL, binW):
     """
-    One SBA window task. Returns:
-      iR, iC, thProbOpt(nCat,), catOpt(nCat,), thI_low(float)
+    Return: iR, iC, thProbOpt(nCats,), catOpt(nCats,), thI_low(float linear)
     """
-    r0 = int(args.r0[iR])
-    c0 = int(args.c0[iC])
-    nr = int(args.nRows[iR])
-    nc = int(args.nCols[iC])
-
-    # ---- read window (numpy) ----
-    Iwin = read_window_from_ds(ds, "img_lp", r0, c0, nr, nc)
-    I1 = Iwin.reshape(-1)
-    I1 = I1[np.isfinite(I1) & (I1 > 0)]
-
-    # land cover window (optional but recommended)
-    lc_win = None
-    if hasattr(ds, "land_cover"):
-        lc_win = read_window_from_ds(ds, "land_cover", r0, c0, nr, nc)
-        lc_flat = lc_win.reshape(-1)
-        lc_flat = lc_flat[np.isfinite(lc_flat)]
+    # --- materialize window locally (worker side) ---
+    if hasattr(Iwin, "compute"):
+        Iw2d = Iwin.compute()
     else:
-        lc_flat = np.array([], dtype=float)
+        Iw2d = Iwin
+    Iw2d = np.asarray(Iw2d, dtype=np.float64)
 
-    nCat = int(len(ds.sigma2))
+    basinMask = np.isfinite(Iw2d)
+    Iw = Iw2d[basinMask]
+    Iw = Iw[np.isfinite(Iw) & (Iw > 0)]  # MATLAB basinMask=~isnan(I1); later water-only uses >0
 
-    # ---- build candidate thProbs ----
-    thProbs = np.arange(
-        float(args.thProbMin),
-        float(args.thProbMax) + float(args.dThProb) / 2.0,
-        float(args.dThProb),
-        dtype=float,
-    )
-    nT = int(thProbs.size)
+    # if too few pixels, early return
+    nCats = int(np.asarray(sigma2).size)
+    if Iw.size < max(50, int(getattr(args, "thMinSampleSize", 500) // 10)):
+        return int(iR), int(iC), np.zeros((nCats,), float), np.zeros((nCats,), bool), 0.0
 
-    # ---- build Iu(t,cat) from chi2 ppf ----
-    sigma2 = np.asarray(ds.sigma2, dtype=float).reshape(-1)
-    ENL = np.asarray(ds.n_est, dtype=float).reshape(-1)
-    binWidth = np.asarray(ds.binWidth, dtype=float).reshape(-1)
+    # --- LCC / PW ratio ---
+    rPW = 0.0
+    isPW = False
+    hasPW = False
+    if lcwin is not None:
+        if hasattr(lcwin, "compute"):
+            LCC2d = lcwin.compute()
+        else:
+            LCC2d = lcwin
+        LCC2d = np.asarray(LCC2d)
 
-    Iu = np.zeros((nT, nCat), dtype=float)
-    for t in range(nT):
-        df = 2.0 * ENL
-        Xu = chi2.ppf(thProbs[t], df=df)
-        Iu[t, :] = Xu * sigma2 / (2.0 * ENL)
+        LCCw = LCC2d[basinMask]
+        # MATLAB: rPW=sum(ismember(LCCw,codePW))/length(LCCw)
+        codePW = int(getattr(args, "codePW", 80))
+        if LCCw.size > 0:
+            rPW = float(np.sum(LCCw == codePW) / LCCw.size)
 
-    # ---- placeholders / rough flags ----
-    meanTransact = np.full((nT,), np.inf, dtype=float)  # TODO: replace with real logic
+        # MATLAB: isPW=rPW>rThPW(2); hasPW=rPW>rThPW(1)
+        # 你这边 rThPW 没贴出来，我按两阈值 tuple 取，缺省给 (0.01, 0.10)
+        rThPW = getattr(args, "rThPW", (0.01, 0.10))
+        hasPW = rPW > float(rThPW[0])
+        isPW = rPW > float(rThPW[1])
 
-    codePW = int(getattr(args, "codePW", 80))
-    hasPW = bool(lc_flat.size > 0 and np.any(lc_flat == codePW))
-    # "isPW" (pure water class) - rough: >=95% water pixels in this tile
-    if lc_flat.size > 0:
-        isPW = bool(np.mean(lc_flat == codePW) >= 0.95)
-    else:
-        isPW = False
+    # --- thProbs / Iu / meanTransact (match MATLAB constants) ---
+    thProbs = np.arange(0.60, 0.9900001, 0.02, dtype=float)
+    Iu, meanTransact, _ = build_Iu_and_meanTransact(thProbs, ENL, sigma2)
 
-    thR = float(getattr(args, "thR", 0.0))
-
-    # ---- call findThProb ----
+    # --- findThProb ---
     found, thProbOpt, catOpt, thI_low = findThProb(
-        runStyle="wind_inclusive",   # glacial_exclusive left TODO
+        runStyle=getattr(args, "runStyle", "wind_inclusive"),
         thProbs=thProbs,
         Iu=Iu,
-        I1=I1,
+        I1=Iw,                 # 1D samples in window
         sigma2=sigma2,
         ENL=ENL,
-        binWidth=binWidth,
+        binWidth=binW,
         meanTransact=meanTransact,
-        thKLD=float(args.thKLD),
-        thR=thR,
-        thNSE=float(args.thNSE),
-        thDist2Mean=float(args.thDist2Mean),
-        thSampleSize=int(args.thMinSampleSize),
-        isPW=isPW,
-        hasPW=hasPW,
+        thKLD=float(getattr(args, "thKLD", 0.5)),
+        thR=float(getattr(args, "thR", 0.0)),
+        thNSE=float(getattr(args, "thNSE", 0.0)),
+        thDist2Mean=float(getattr(args, "thDist2Mean", 0.1)),
+        thSampleSize=int(getattr(args, "thMinSampleSize", 500)),
+        isPW=bool(isPW),
+        hasPW=bool(hasPW),
     )
 
-    return iR, iC, thProbOpt, catOpt, thI_low
+    # even if not found, we still return arrays (MATLAB stores zeros)
+    thProbOpt = np.asarray(thProbOpt, dtype=float).reshape(-1)
+    catOpt = np.asarray(catOpt, dtype=bool).reshape(-1)
+
+    if thProbOpt.size != nCats:
+        tmp = np.zeros((nCats,), float)
+        tmp[: min(nCats, thProbOpt.size)] = thProbOpt[: min(nCats, thProbOpt.size)]
+        thProbOpt = tmp
+    if catOpt.size != nCats:
+        tmpb = np.zeros((nCats,), bool)
+        tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
+        catOpt = tmpb
+
+    return int(iR), int(iC), thProbOpt, catOpt, float(thI_low)
+
+
+def _ensure_refmeta(args):
+    """
+    Prefer args.refmeta (serializable) over keeping an open dataset handle.
+    If missing, fall back to reading from args.filepath[0] (one-time IO).
+    """
+    if getattr(args, "refmeta", None) is None:
+        with rasterio.open(args.filepath[0]) as src:
+            args.refmeta = src.meta.copy()
+
+
+def _build_coarse_transform_from_blocks(args, refmeta):
+    """
+    MATLAB builds geoTransMat based on block centers.
+    Here we compute coarse pixel size from centers of first two blocks in each direction.
+    args.r0/c0/nRows/nCols are 1D "process window" vectors (you already normalized to col=1).
+    """
+    tr = refmeta["transform"]
+
+    r0 = np.asarray(args.r0).reshape(-1)
+    c0 = np.asarray(args.c0).reshape(-1)
+    nRows = np.asarray(args.nRows).reshape(-1)
+    nCols = np.asarray(args.nCols).reshape(-1)
+
+    nR = int(args.nR)
+    nC = int(args.nC)
+
+    # center of first cell (0,0)
+    r_center00 = float(r0[0] + nRows[0] / 2.0)
+    c_center00 = float(c0[0] + nCols[0] / 2.0)
+    x00, y00 = rasterio.transform.xy(tr, r_center00, c_center00, offset="center")
+
+    # estimate coarse resolution using neighbor centers (fallback to ref pixel scale if only 1 cell)
+    if nC >= 2:
+        c_center01 = float(c0[1] + nCols[1] / 2.0)
+        x01, _ = rasterio.transform.xy(tr, r_center00, c_center01, offset="center")
+        resX = float(x01 - x00)
+    else:
+        resX = float(tr.a)
+
+    if nR >= 2:
+        r_center10 = float(r0[1] + nRows[1] / 2.0)
+        _, y10 = rasterio.transform.xy(tr, r_center10, c_center00, offset="center")
+        resY = float(y10 - y00)
+    else:
+        resY = float(tr.e)
+
+    # origin is top-left corner of coarse pixel [0,0]
+    x0 = float(x00 - resX / 2.0)
+    y0 = float(y00 - resY / 2.0)
+
+    return Affine(resX, 0.0, x0, 0.0, resY, y0)
+
+
+def _write_tif(path, arr2d, transform, crs, nodata, dtype="float32"):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    profile = {
+        "driver": "GTiff",
+        "height": int(arr2d.shape[0]),
+        "width": int(arr2d.shape[1]),
+        "count": 1,
+        "dtype": dtype,
+        "crs": crs,
+        "transform": transform,
+        "nodata": nodata,
+        "compress": "deflate",
+        "tiled": True,
+    }
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(arr2d.astype(dtype, copy=False), 1)
+
+
+def _resample_to_ref(src_path, dst_path, refmeta, resampling=Resampling.bilinear):
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+
+    ref_transform = refmeta["transform"]
+    ref_crs = refmeta["crs"]
+    ref_h = int(refmeta["height"])
+    ref_w = int(refmeta["width"])
+    ref_nodata = refmeta.get("nodata", 255)
+
+    with rasterio.open(src_path) as src:
+        src_arr = src.read(1)
+        src_transform = src.transform
+        src_crs = src.crs
+        src_nodata = src.nodata
+
+        dst_arr = np.full((ref_h, ref_w), ref_nodata, dtype=np.float32)
+
+        reproject(
+            source=src_arr,
+            destination=dst_arr,
+            src_transform=src_transform,
+            src_crs=src_crs,
+            src_nodata=src_nodata,
+            dst_transform=ref_transform,
+            dst_crs=ref_crs,
+            dst_nodata=ref_nodata,
+            resampling=resampling,
+        )
+
+    out_profile = refmeta.copy()
+    out_profile.update(driver="GTiff", count=1, dtype="float32", nodata=ref_nodata, compress="deflate", tiled=True)
+    with rasterio.open(dst_path, "w", **out_profile) as dst:
+        dst.write(dst_arr.astype("float32", copy=False), 1)
+
+
+def _build_matThI(args, ds):
+    """
+    Build coarse threshold-intensity maps (linear domain).
+    MATLAB: nClasses = nCats + 1; last class is matThI_low.
+    For each cat, thI = chi2.ppf(thProbOpt, df=2*n) * sigma2 / (2*n).
+    """
+    matThProb = np.asarray(ds.matThProb, dtype=float)     # (nR,nC,nCats)
+    matThI_low = np.asarray(ds.matThI_low, dtype=float)   # (nR,nC)
+
+    sigma2 = np.asarray(ds.sigma2, dtype=float).reshape(-1)
+    ENL = np.asarray(ds.n_est, dtype=float).reshape(-1)
+
+    nR, nC, nCats = matThProb.shape
+    nClasses = nCats + 1
+
+    matThI = np.full((nR, nC, nClasses), np.nan, dtype=float)
+
+    # per-class threshold from thProb
+    for k in range(nCats):
+        p = matThProb[:, :, k]
+        # valid probabilities
+        valid = np.isfinite(p) & (p > 0) & (p < 1)
+        if not np.any(valid):
+            continue
+
+        Xu = np.full((nR, nC), np.nan, dtype=float)
+        Xu[valid] = chi2.ppf(p[valid], df=2.0 * ENL[k])
+        matThI[:, :, k] = Xu * sigma2[k] / (2.0 * ENL[k])
+
+    # last class = low class threshold map
+    matThI[:, :, -1] = matThI_low
+
+    # MATLAB: conservatively suppress any thILow to below median (50th percentile)
+    low = matThI[:, :, -1]
+    mask = np.isfinite(low) & (low > 0) & (~np.isinf(low))
+    if np.any(mask):
+        prc50 = float(np.percentile(low[mask], 50))
+        low2 = low.copy()
+        low2[np.isinf(low2)] = prc50
+        low2[(low2 >= prc50)] = prc50
+        matThI[:, :, -1] = low2
+
+    return matThI
+
+
+def dist_th_postprocess(args, ds, nodata=255):
+    """
+    Python port of MATLAB dist_th (post ~200 lines):
+      1) build matThI (coarse threshold maps in linear domain)
+      2) write coarse tif and resample to fine tif
+      3) generate initial classification raster (Cat_init.tif) by scanning full-res blocks
+      4) collect pol_water samples per class (like MATLAB pol_water{idx(cat)})
+    """
+
+    _ensure_refmeta(args)
+    refmeta = args.refmeta
+    rowsImage = int(refmeta["height"])
+    colsImage = int(refmeta["width"])
+
+    # ---- output file roots (aligned with your dup_args layout) ----
+    fileThCoarse_root = getattr(args, "fileThCoarse_root", os.path.join(args.dirTempPol, "ThCoarse_"))
+    fileThFine_root = getattr(args, "fileThFine_root", os.path.join(args.dirTempPol, "ThFine_"))
+    fileCatInit = getattr(args, "fileCatInit", os.path.join(args.dirOut, "Cat_init.tif"))
+
+    # ---- 1) build matThI ----
+    matThI = _build_matThI(args, ds)  # (nR,nC,nClasses)
+    nR, nC, nClasses = matThI.shape
+
+    # ---- 2) write coarse threshold maps and resample to full-res ----
+    coarse_transform = _build_coarse_transform_from_blocks(args, refmeta)
+    crs = refmeta["crs"]
+
+    for cat in range(1, nClasses + 1):
+        coarse_path = f"{fileThCoarse_root}{cat}.tif"
+        fine_path = f"{fileThFine_root}{cat}.tif"
+
+        print(f"interpolate the threshold map for class {cat}...")
+
+        arr = matThI[:, :, cat - 1]
+        # write nodata as 255 to match your convention (float raster with nodata=255 is ok)
+        out = np.where(np.isfinite(arr), arr.astype(np.float32, copy=False), np.float32(nodata))
+
+        _write_tif(
+            coarse_path,
+            out,
+            transform=coarse_transform,
+            crs=crs,
+            nodata=nodata,
+            dtype="float32",
+        )
+        _resample_to_ref(coarse_path, fine_path, refmeta, resampling=Resampling.bilinear)
+
+    # ---- 3) scan full-res and produce initial classification ----
+    # MATLAB: C(end+1)=inf; idx=sort(C,'ascend');
+    C_ext = np.concatenate([np.asarray(ds.sigma2, dtype=float).reshape(-1), [np.inf]])
+    idx_sorted = np.argsort(C_ext) + 1  # 1-based class indices used in filenames and output
+
+    # open output classification raster (uint8)
+    out_meta = refmeta.copy()
+    out_meta.update(driver="GTiff", count=1, dtype="uint8", nodata=nodata, compress="deflate", tiled=True)
+    os.makedirs(os.path.dirname(fileCatInit), exist_ok=True)
+
+    # collect pol_water like MATLAB cell array (index by class id 1..nClasses)
+    pol_water_lists = [[] for _ in range(nClasses + 1)]
+
+    # block over full image like MATLAB GetBlock(fileInt,1000,0,false,false)
+    nR2, nC2, r0b, c0b, nRowsb, nColsb, _, _ = get_block(
+        rowsImage, colsImage,
+        block_size=1000,
+        overlap=0,
+        offset=False,
+        keep_size=False,
+    )
+
+    with rasterio.open(fileCatInit, "w", **out_meta) as dst:
+        total = int(nR2) * int(nC2)
+        done = 0
+
+        for iR in range(int(nR2)):
+            rr0 = int(r0b[iR]); rrn = int(nRowsb[iR])
+
+            for iC in range(int(nC2)):
+                done += 1
+                cc0 = int(c0b[iC]); ccn = int(nColsb[iC])
+
+                if getattr(args, "showProg", False):
+                    prog = done / total
+                    print(f"\r{int(prog*100)}%...", end="")
+
+                # intensity block
+                Iblk = ds.img_lp[rr0:rr0 + rrn, cc0:cc0 + ccn]
+                if hasattr(Iblk, "compute"):
+                    Iblk = Iblk.compute()
+                Iblk = np.asarray(Iblk, dtype=np.float64)
+
+                basinMask = np.isfinite(Iblk) & (Iblk > 0)
+
+                # waterCat: nodata outside basin; 0 inside basin initially
+                waterCat = np.full((rrn, ccn), nodata, dtype=np.uint8)
+                waterCat[basinMask] = 0
+
+                for rank in range(nClasses):
+                    cls = int(idx_sorted[rank])  # 1..nClasses
+                    fine_path = f"{fileThFine_root}{cls}.tif"
+
+                    with rasterio.open(fine_path) as thsrc:
+                        th_blk = thsrc.read(
+                            1,
+                            window=Window(cc0, rr0, ccn, rrn),
+                            boundless=True,
+                            fill_value=nodata,
+                        ).astype(np.float64)
+
+                    # MATLAB: waterMask = I1 < thI; waterCat(waterMask & waterCat==0)=idx(cat)
+                    waterMask = basinMask & np.isfinite(th_blk) & (th_blk != nodata) & (Iblk < th_blk)
+                    place = waterMask & (waterCat == 0)
+                    if np.any(place):
+                        waterCat[place] = np.uint8(cls)
+
+                        # collect samples
+                        px = Iblk[waterCat == cls]
+                        if px.size > 0:
+                            pol_water_lists[cls].append(px.reshape(-1))
+
+                dst.write(waterCat, 1, window=Window(cc0, rr0, ccn, rrn))
+
+        if getattr(args, "showProg", False):
+            print("\nDone")
+
+    # flatten pol_water
+    pol_water = [np.array([], dtype=np.float64) for _ in range(nClasses + 1)]
+    for cls in range(1, nClasses + 1):
+        if pol_water_lists[cls]:
+            pol_water[cls] = np.concatenate(pol_water_lists[cls], axis=0)
+
+    ds.matThI = matThI
+    ds.idx_sorted = idx_sorted
+    ds.C_ext = C_ext
+    ds.pol_water = pol_water
+    ds.fileCatInit = fileCatInit
+    ds.fileThCoarse_root = fileThCoarse_root
+    ds.fileThFine_root = fileThFine_root
+
+    print(f"[dist_th] wrote threshold maps and initial classification -> {fileCatInit}")
+    return args, ds
