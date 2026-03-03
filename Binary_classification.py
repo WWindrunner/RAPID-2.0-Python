@@ -549,32 +549,100 @@ def run_init_bimodality_dask(args, ds):
     img_bbox = ds.img_lp[r_min:r_max, c_min:c_max].compute()
     wo_bbox = ds.water_occurrence[r_min:r_max, c_min:c_max].compute()
 
-    # ---- 并行 window：delayed 但不再 compute 子数组 ----
-    tasks = [
-        dask.delayed(_init_bimod_one_window_from_bbox)(
-            args,
-            img_bbox, wo_bbox,
-            r_min, c_min,
-            float(ths[w]), int(r0s[w]), int(c0s[w]),
-            int(nrs[w]), int(ncs[w]),
-            int(w)
-        )
-        for w in range(nWindows)
-    ]
-    print("[run_init_bimodality] dask compute")
+    print("[run_init_bimodality] start serial windows (NO DASK)", flush=True)
     import time
-    batch = 30
+
     results = []
     t0 = time.perf_counter()
 
-    for i in range(0, len(tasks), batch):
-        t_batch0 = time.perf_counter()
-        batch_tasks = tasks[i:i+batch]
-        batch_res = dask.compute(*batch_tasks)
-        t_batch1 = time.perf_counter()
-        results.extend(batch_res)
-        print(f"[run_init_bimodality] batch {i//batch+1}: {i+len(batch_tasks)}/{len(tasks)} done, batch_time={t_batch1-t_batch0:.3f}s, total_elapsed={t_batch1-t0:.1f}s")
-    #results = dask.compute(*tasks)
+    # 控制日志频率
+    log_every = 10          # 每完成多少个 window 打一次进度
+    slow_warn_s = 30      # 单个 window 超过多少秒报警
+    topk_track = 5         # 记录最慢的 topk windows
+
+    # 记录最慢 windows（(elapsed, w)）
+    slowest = []
+
+    for w in range(nWindows):
+        t_w0 = time.perf_counter()
+
+        # 取参数（保持你原来的方式）
+        thOcc = float(ths[w])
+        r0 = int(r0s[w]); c0 = int(c0s[w])
+        nRows = int(nrs[w]); nCols = int(ncs[w])
+
+        # --- 切片（numpy view，理论上很快） ---
+        rr0 = r0 - r_min
+        cc0 = c0 - c_min
+        I_lin = img_bbox[rr0:rr0+nRows, cc0:cc0+nCols]
+        probW = wo_bbox [rr0:rr0+nRows, cc0:cc0+nCols]
+
+        # --- 计时：GMM ---
+        t_g0 = time.perf_counter()
+        Iu, pc, mu, sigma, RH = threshold_gmm_window(I_lin, probW, thOcc, waterOnly=False)
+        t_g1 = time.perf_counter()
+
+        # --- 计时：validate ---
+        t_v0 = time.perf_counter()
+        maskValid, AD = validate_gmm(
+            RH, pc, mu, sigma, Iu,
+            thPC=tuple(args.thPC),
+            thAD=float(args.thAD),
+            thRH=float(args.thRH),
+            thDist2Mean=float(args.thDist2Mean),
+            separately=True
+        )
+        t_v1 = time.perf_counter()
+
+        t_w1 = time.perf_counter()
+        dt = t_w1 - t_w0
+        dt_gmm = t_g1 - t_g0
+        dt_val = t_v1 - t_v0
+
+        results.append({
+            "w": w,
+            "Iu": Iu,
+            "pc": pc,
+            "mu": mu,
+            "sigma": sigma,
+            "RH": RH,
+            "AD": AD,
+            "valid": bool(maskValid),
+
+            # --- optional profiling fields ---
+            "dt_total": dt,
+            "dt_gmm": dt_gmm,
+            "dt_val": dt_val,
+            "r0": r0, "c0": c0, "nRows": nRows, "nCols": nCols, "thOcc": thOcc
+        })
+
+        # 维护 slowest topk
+        slowest.append((dt, w))
+        slowest.sort(reverse=True)
+        if len(slowest) > topk_track:
+            slowest = slowest[:topk_track]
+
+        # 进度日志
+        if (w + 1) % log_every == 0:
+            elapsed = time.perf_counter() - t0
+            print(f"[run_init_bimodality] {w+1}/{nWindows} done | elapsed={elapsed:.1f}s | last={dt:.3f}s (gmm={dt_gmm:.3f}s, val={dt_val:.3f}s)",
+              flush=True)
+
+        # 慢 window 报警（立即告诉你哪个窗口慢）
+        if dt > slow_warn_s:
+            print(f"[run_init_bimodality][SLOW] w={w} dt={dt:.3f}s (gmm={dt_gmm:.3f}s, val={dt_val:.3f}s) "
+                  f"size={nRows}x{nCols} r0,c0=({r0},{c0}) thOcc={thOcc:.3f}",
+                  flush=True)
+
+    # 汇总最慢窗口
+    elapsed_all = time.perf_counter() - t0
+    print(f"[run_init_bimodality] serial windows finished. total_elapsed={elapsed_all:.1f}s", flush=True)
+    print("[run_init_bimodality] top slowest windows:", flush=True)
+    for dt, w in slowest:
+        r = results[w]
+        print(f"  w={w:4d} dt={dt:.3f}s (gmm={r['dt_gmm']:.3f}s, val={r['dt_val']:.3f}s) "
+              f"size={r['nRows']}x{r['nCols']} r0,c0=({r['r0']},{r['c0']}) thOcc={r['thOcc']:.3f}",
+              flush=True)
 
     # ---- 分配输出数组 ----
     Iu = np.full((nWindows,), np.nan, dtype=np.float64)
@@ -1246,6 +1314,18 @@ def optimizeDist6(args, ds):
     return args, ds
 
 
+def _block_col(x, which: int):
+    """
+    which=0 -> read window (with overlap)
+    which=1 -> process window (core block)
+    if x is 1D already, return as-is.
+    """
+    x = np.asarray(x)
+    if x.ndim == 2:
+        return x[:, which]
+    return x
+
+
 @tim
 def dist_th(args, ds):
     """
@@ -1259,6 +1339,11 @@ def dist_th(args, ds):
       ds.matThI_low:(nR, nC)
     """
     print("dist_th: packing SBA windows and dispatching tasks...")
+
+    args.r0 = _block_col(args.r0, 1).astype(np.int64, copy=False)
+    args.nRows = _block_col(args.nRows, 1).astype(np.int64, copy=False)
+    args.c0 = _block_col(args.c0, 1).astype(np.int64, copy=False)
+    args.nCols = _block_col(args.nCols, 1).astype(np.int64, copy=False)
 
     # from Binary_classification -> get_block
     nR = int(args.nR)

@@ -218,6 +218,8 @@ def dup_args(args, filepath, granuele_name, wotif=None):
     args_new.dirOut = os.path.join(args_new.WORK_PATH, granuele_name)
     args_new.fileSampleMap = os.path.join(args_new.dirOut, 'SampleMap.tif')  # intermedian result, not used for now
     args_new.logFile = os.path.join(args_new.dirOut, 'sta_log.csv')
+    args_new.dirTempPol = os.path.join(args_new.dirOut, "TempPol")
+    os.makedirs(args_new.dirTempPol, exist_ok=True)
     os.makedirs(args_new.dirOut, exist_ok=True)
     if args.blockSize == 'auto':
         args_new.chunks = 'auto'
