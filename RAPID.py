@@ -126,16 +126,46 @@ def parse(config_json=None):
     parser.add_argument('--thRH', type=float, default=0.5)
     parser.add_argument('--thDist2Mean', type=float, default=0.1)
 
-    parser.add_argument('--maxENL', type=float, default=10.0,
-                        help='Upper bound of ENL search in findInitDist. Default 10.0.')
-    parser.add_argument('--thKLD', type=float, default=0.5,
-                        help='Remove categories if KLD > thKLD. Default 0.5.')
-    parser.add_argument('--thNSE', type=float, default=0.0,
-                        help='Remove categories if NSE < thNSE. Default 0.0.')
-    parser.add_argument('--thR2', type=float, default=0.0,
-                        help='Remove categories if R2 < thR2. Default 0.0.')
+    parser.add_argument('--maxENL', type=float, default=7.0,
+                        help='Upper bound of ENL search in findInitDist. Default 7.0.')
+    parser.add_argument('--thKLD', type=float, default=0.2,
+                        help='Remove categories if KLD > thKLD. Default 0.2.')
+    parser.add_argument('--thNSE', type=float, default=0.7,
+                        help='Remove categories if NSE < thNSE. Default 0.7.')
+    parser.add_argument('--thR2', type=float, default=0.8,
+                        help='Remove categories if R2 < thR2. Default 0.8.')
     parser.add_argument('--writeSampleDist', type=_str2bool, default=True,
                         help='Write chi-square vs empirical distribution figures for each category. Default True.')
+
+    # -----------------------------
+    # dist_th / worker thresholds
+    # -----------------------------
+    parser.add_argument('--distThKLD', nargs=2, type=float, default=[0.1, 0.2],
+                        help='KLD thresholds used in dist_th worker. Two floats: strict loose. Default [0.1, 0.2].')
+
+    parser.add_argument('--distThR', nargs=2, type=float, default=[0.9, 0.7],
+                        help='Correlation thresholds used in dist_th worker. Two floats: strict loose. Default [0.9, 0.7].')
+
+    parser.add_argument('--distThNSE', nargs=2, type=float, default=[0.80, 0.40],
+                        help='NSE thresholds used in dist_th worker. Two floats: strict loose. Default [0.80, 0.40].')
+
+    parser.add_argument('--distThDist2Mean', type=float, default=0.1,
+                        help='Distance-to-mean threshold used in dist_th bimodality test. Default 0.1.')
+
+    parser.add_argument('--distThSampleSize', type=int, default=50,
+                        help='Minimum sample size used in dist_th worker. Default 50.')
+
+    parser.add_argument('--distThRPW', nargs=2, type=float, default=[0.01, 0.9],
+                        help='PW ratio thresholds [hasPW, isPW] used in dist_th worker. Default [0.01, 0.9].')
+
+    parser.add_argument('--distThPC', nargs=2, type=float, default=[0.02, 0.98],
+                        help='PC range used in dist_th bimodality GMM validation. Default [0.02, 0.98].')
+
+    parser.add_argument('--distThAD', type=float, default=0.9,
+                        help='AD threshold used in dist_th bimodality GMM validation. Default 0.9.')
+
+    parser.add_argument('--distThRH', nargs=2, type=float, default=[1.0, 1.0],
+                        help='RH thresholds [wind_inclusive, glacial_exclusive] used in dist_th bimodality GMM validation. Default [1.0, 1.0].')
 
     # ---- current workflow / io ----
     parser.add_argument('--OUT_PATH', type=str, default='.')
@@ -157,6 +187,16 @@ def parse(config_json=None):
     args.thNSE = float(args.thNSE)
     args.thR2 = float(args.thR2)
     args.writeSampleDist = bool(args.writeSampleDist)
+
+    args.distThKLD = (float(args.distThKLD[0]), float(args.distThKLD[1]))
+    args.distThR = (float(args.distThR[0]), float(args.distThR[1]))
+    args.distThNSE = (float(args.distThNSE[0]), float(args.distThNSE[1]))
+    args.distThDist2Mean = float(args.distThDist2Mean)
+    args.distThSampleSize = int(args.distThSampleSize)
+    args.distThRPW = (float(args.distThRPW[0]), float(args.distThRPW[1]))
+    args.distThPC = (float(args.distThPC[0]), float(args.distThPC[1]))
+    args.distThAD = float(args.distThAD)
+    args.distThRH = (float(args.distThRH[0]), float(args.distThRH[1]))
 
     # ---- config override ----
     if config_json is not None:
@@ -340,6 +380,33 @@ def _make_single_pol_ds(ds_scene, pol):
     return ds_pol
 
 
+def _infer_scene_name(filepath):
+    """
+    Infer a scene name from one scene input.
+
+    filepath is one scene entry:
+      - local dual-pol: [vv_path, vh_path]
+      - local single file: [file_path]
+      - remote ASF url: [url]
+    """
+    first = filepath[0]
+
+    # local multi-file scene: use parent folder name
+    if len(filepath) > 1 and not first.startswith("http"):
+        return os.path.basename(os.path.dirname(first))
+
+    # remote url: use zip basename without extension
+    if first.startswith("http"):
+        base = os.path.basename(first)
+        for ext in [".zip", ".SAFE", ".tar", ".gz", ".tif"]:
+            if base.endswith(ext):
+                base = base[:-len(ext)]
+        return os.path.splitext(base)[0]
+
+    # local single file: use file stem
+    return os.path.splitext(os.path.basename(first))[0]
+
+
 @tim
 def Binary_classification_dualpol(args_scene, ds_scene):
     """
@@ -438,14 +505,7 @@ def RAPID(*args, **kwargs):
         raise ValueError("Wrong number of input arguments!")
 
     # output root
-    raw_out_path = os.path.join(args.OUT_PATH, os.path.splitext(args.filepath_list[0][0].split('/')[-1])[0])
-    if os.path.exists(raw_out_path):
-        now = datetime.datetime.now()
-        now_str = now.strftime('%Y-%m-%d_%H-%M-%S')
-        rand_num = random.randint(1, 1000000)
-        args.WORK_PATH = raw_out_path + f'_{now_str}_{rand_num}'
-    else:
-        args.WORK_PATH = raw_out_path
+    args.WORK_PATH = args.OUT_PATH
     os.makedirs(args.WORK_PATH, exist_ok=True)
 
     filepath_list = args.filepath_list
@@ -466,7 +526,7 @@ def RAPID(*args, **kwargs):
         if len(filepath_list) == len(args.granules):
             granuele_name = args.granules[idx]
         else:
-            granuele_name = os.path.splitext(filepath[0].split('/')[-1])[0]
+            granuele_name = _infer_scene_name(filepath)
 
         args1 = dup_args(args, filepath, granuele_name, wotif=None)
         args1.granules = granuele_name
@@ -497,7 +557,7 @@ def RAPID(*args, **kwargs):
         return args_ndfi, ds_ndfi
 
     # ----------------------------------
-    # NEW NORMAL WORKFLOW:
+    # WORKFLOW:
     # scene-level Load_Data
     # scene-level dual-pol Binary
     # scene-level Morph

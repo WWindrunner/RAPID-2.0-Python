@@ -324,23 +324,56 @@ def findThProb(
     ENL,
     binWidth,
     meanTransact,
-    thKLD: float,
-    thR: float,
-    thNSE: float,
+    thKLD,
+    thR,
+    thNSE,
     thDist2Mean: float,
     thSampleSize: int,
     isPW: bool,
     hasPW: bool,
+    thPC=(0.02, 0.98),
+    thAD=0.9,
+    thRH=(1.0, 1.0),
 ):
     """
-    Port of findThProb.m (wind_inclusive implemented; glacial_exclusive NOT).
+    Port of MATLAB findThProb.m
 
-    Returns:
-      found (bool), thProb_out (nCat,), catSel_out (nCat,), thI (float linear)
+    Parameters
+    ----------
+    runStyle : str
+        'wind_inclusive' or 'glacial_exclusive' (glacial_exclusive still left TODO)
+    thProbs : (nProbs,)
+    Iu : (nProbs, nCat)
+        Threshold intensities in LINEAR domain for each probability and class.
+    I1 : (N,)
+        Window samples in LINEAR domain.
+    sigma2 : (nCat,)
+    ENL : (nCat,)
+    binWidth : (nCat,)
+    meanTransact : (nProbs,)
+        Mean of truncated lowest-class distribution (LINEAR domain).
+    thKLD, thR, thNSE : scalar or len-2 sequence
+        MATLAB worker uses len-2 thresholds. This function supports both.
+    thDist2Mean : float
+    thSampleSize : int
+    isPW, hasPW : bool
+    thPC : tuple(float, float)
+    thAD : float
+    thRH : tuple(float, float)
+
+    Returns
+    -------
+    found : bool
+    thProb_out : (nCat,)
+    catSel_out : (nCat,)
+    thI : float
+        Low-class threshold in LINEAR domain.
+        0   -> no lower class found
+        inf -> global bimodality applies
     """
     thProbs = np.asarray(thProbs, dtype=float).reshape(-1)
     I1 = np.asarray(I1, dtype=float).reshape(-1)
-    I1 = I1[np.isfinite(I1)]
+    I1 = I1[np.isfinite(I1) & (I1 > 0)]
 
     sigma2 = np.asarray(sigma2, dtype=float).reshape(-1)
     ENL = np.asarray(ENL, dtype=float).reshape(-1)
@@ -349,11 +382,29 @@ def findThProb(
 
     Iu = np.asarray(Iu, dtype=float)
     if Iu.ndim != 2:
-        raise ValueError("Iu must be 2D (len(thProbs), nCat).")
+        raise ValueError("Iu must be 2D with shape (len(thProbs), nCat).")
 
     nCat = int(sigma2.size)
     if Iu.shape != (thProbs.size, nCat):
         raise ValueError(f"Iu shape mismatch: expected {(thProbs.size, nCat)}, got {Iu.shape}")
+
+    # support scalar or 2-element thresholds
+    thKLD = np.asarray(thKLD, dtype=float).reshape(-1)
+    thR = np.asarray(thR, dtype=float).reshape(-1)
+    thNSE = np.asarray(thNSE, dtype=float).reshape(-1)
+
+    if thKLD.size == 1:
+        thKLD = np.repeat(thKLD, 2)
+    if thR.size == 1:
+        thR = np.repeat(thR, 2)
+    if thNSE.size == 1:
+        thNSE = np.repeat(thNSE, 2)
+
+    if thKLD.size < 2 or thR.size < 2 or thNSE.size < 2:
+        raise ValueError("thKLD, thR, thNSE must be scalar or length-2.")
+
+    thPC = tuple(thPC)
+    thRH = tuple(thRH)
 
     catSel = np.zeros((nCat, 2), dtype=bool)
     thProb = np.zeros((nCat, 2), dtype=float)
@@ -361,10 +412,6 @@ def findThProb(
 
     low_class = int(np.nanargmin(sigma2))
 
-    # thresholds for bimodality (as in MATLAB)
-    thPC = (0.02, 0.98)
-    thAD = 0.9
-    thRH = (1.0, 1.0)
     bimodalTested = False
 
     for cat in range(nCat):
@@ -375,10 +422,16 @@ def findThProb(
             if pol_water.size < int(thSampleSize):
                 break
 
+            # bimodality test only for the lowest class and larger thProb
             if (cat == low_class) and (thProbs[t] > 0.6):
                 real_mean = float(np.mean(pol_water))
 
-                if np.isfinite(meanTransact[t]) and (real_mean < float(meanTransact[t])) and (not bimodalTested):
+                # IMPORTANT: only test when meanTransact is finite
+                if (
+                    np.isfinite(meanTransact[t])
+                    and (real_mean < float(meanTransact[t]))
+                    and (not bimodalTested)
+                ):
                     bimodalTested = True
 
                     if runStyle == "wind_inclusive":
@@ -388,7 +441,7 @@ def findThProb(
                             ref_low_mean_db = 10.0 * np.log10(sigma2[cat])
 
                             th_db, pc, muGMM, sigmaGMM, RH_gmm, AD_gmm, is_valid, isOneMode = thresholdGMM_Dual(
-                                I_linear=I1,               # LINEAR
+                                I_linear=I1,
                                 probW=None,
                                 thProb=None,
                                 waterOnly=True,
@@ -402,7 +455,8 @@ def findThProb(
                             if is_valid:
                                 muGMM = np.asarray(muGMM, dtype=float).reshape(-1)
                                 if muGMM.size > 0 and muGMM[0] < ref_low_mean_db + 3.8:
-                                    thI = 10.0 ** (float(np.min([th_db])) / 10.0)  # dB -> linear
+                                    # MATLAB: thI = 10^(min(thI)/10)
+                                    thI = 10.0 ** (float(th_db) / 10.0)
                                 elif hasPW:
                                     thI = float("inf")
                                 else:
@@ -413,12 +467,12 @@ def findThProb(
                                 thI = 0.0
 
                     elif runStyle == "glacial_exclusive":
-                        # TODO: as requested
+                        # TODO: keep empty for now
                         pass
                     else:
                         raise ValueError(f"Unknown runStyle={runStyle}")
 
-            # distribution test (scalar version)
+            # scalar distribution test
             KLD, _, _, R, NSE = KLD_chi2_frm_sample(
                 I=pol_water,
                 sigma2=float(sigma2[cat]),
@@ -430,22 +484,25 @@ def findThProb(
                 out_figure=None,
             )
 
-            pass_mask = (KLD < thKLD) and (R > thR) and (NSE > thNSE)
+            pass_vec = np.array([
+                (KLD < thKLD[0]) and (R > thR[0]) and (NSE > thNSE[0]),
+                (KLD < thKLD[1]) and (R > thR[1]) and (NSE > thNSE[1]),
+            ], dtype=bool)
 
-            # keep MATLAB 2-col structure but driven by same boolean for now
-            catSel[cat, 0] = bool(pass_mask)
-            catSel[cat, 1] = bool(catSel[cat, 1] or pass_mask)
+            catSel[cat, 0] = pass_vec[0]
+            catSel[cat, 1] = bool(catSel[cat, 1] or pass_vec[1])
+            thProb[cat, 0] = float(thProbs[t]) if pass_vec[0] else 0.0
 
-            thProb[cat, 0] = float(thProbs[t]) if pass_mask else 0.0
-            if (thProb[cat, 1] == 0.0) and pass_mask:
+            if (thProb[cat, 1] == 0.0) and pass_vec[1]:
                 thProb[cat, 1] = float(thProbs[t])
 
-            if pass_mask:
+            if pass_vec[0]:
                 break
 
     mask1 = thProb[:, 0] > 0
     mask2 = (thProb[:, 1] > 0) & (thProb[:, 0] <= 0)
     thProb_out = thProb[:, 0] * mask1 + thProb[:, 1] * mask2
+
     catSel_out = catSel[:, 0] | catSel[:, 1]
     found = bool(np.any(thProb_out > 0) or (thI > 0))
 
@@ -490,8 +547,7 @@ def dist_th_window_worker(args, iR, iC, Iwin, lcwin, sigma2, ENL, binW):
             rPW = float(np.sum(LCCw == codePW) / LCCw.size)
 
         # MATLAB: isPW=rPW>rThPW(2); hasPW=rPW>rThPW(1)
-        # 你这边 rThPW 没贴出来，我按两阈值 tuple 取，缺省给 (0.01, 0.10)
-        rThPW = getattr(args, "rThPW", (0.01, 0.10))
+        rThPW = getattr(args, "distThRPW", (0.01, 0.9))
         hasPW = rPW > float(rThPW[0])
         isPW = rPW > float(rThPW[1])
 
@@ -509,13 +565,16 @@ def dist_th_window_worker(args, iR, iC, Iwin, lcwin, sigma2, ENL, binW):
         ENL=ENL,
         binWidth=binW,
         meanTransact=meanTransact,
-        thKLD=float(getattr(args, "thKLD", 0.5)),
-        thR=float(getattr(args, "thR", 0.0)),
-        thNSE=float(getattr(args, "thNSE", 0.0)),
-        thDist2Mean=float(getattr(args, "thDist2Mean", 0.1)),
-        thSampleSize=int(getattr(args, "thMinSampleSize", 500)),
+        thKLD=float(getattr(args, "distThKLD", (0.1, 0.2))),
+        thR=float(getattr(args, "distThR", (0.9, 0.7))),
+        thNSE=float(getattr(args, "distThNSE", (0.80, 0.40))),
+        thDist2Mean=float(getattr(args, "distThDist2Mean", 0.1)),
+        thSampleSize=int(getattr(args, "distThSampleSize", 50)),
         isPW=bool(isPW),
         hasPW=bool(hasPW),
+        thPC=getattr(args, "distThPC", (0.02, 0.98)),
+        thAD=float(getattr(args, "distThAD", 0.9)),
+        thRH=getattr(args, "distThRH", (1.0, 1.0)),
     )
 
     # even if not found, we still return arrays (MATLAB stores zeros)
