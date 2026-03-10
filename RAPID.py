@@ -42,6 +42,65 @@ def _str2bool(v):
     raise argparse.ArgumentTypeError(f"Boolean value expected, got: {v}")
 
 
+def normalize_args(args):
+    """
+    Normalize argument types and derived fields exactly once,
+    after CLI parsing and optional config override.
+    """
+    # -------- bool-like fields --------
+    bool_fields = [
+        "Iter", "showDist", "writeSampleMap", "showProg", "showProgress",
+        "imported", "optIterAlg", "bInitialized", "bExport",
+        "floodimage", "failed", "writeSampleDist",
+    ]
+    for name in bool_fields:
+        if hasattr(args, name):
+            setattr(args, name, _str2bool(getattr(args, name)))
+
+    # -------- scalar numeric fields --------
+    int_fields = [
+        "blockSize",
+        "distThSampleSize",
+        "morphPreBlockSize",
+        "morphPrePatchSize",
+    ]
+    for name in int_fields:
+        if hasattr(args, name):
+            setattr(args, name, int(getattr(args, name)))
+
+    float_fields = [
+        "thOccLow", "thOccHigh", "thFrac",
+        "maxENL", "thKLD", "thNSE", "thR2",
+        "distThDist2Mean", "distThAD",
+        "morphPreAD", "morphPreRH", "morphPreDist2Mean",
+    ]
+    for name in float_fields:
+        if hasattr(args, name):
+            setattr(args, name, float(getattr(args, name)))
+
+    # -------- tuple/list numeric fields --------
+    tuple2_fields = [
+        "thPC",
+        "distThKLD", "distThR", "distThNSE", "distThRPW", "distThPC", "distThRH",
+        "morphPrePC",
+    ]
+    for name in tuple2_fields:
+        if hasattr(args, name):
+            val = getattr(args, name)
+            if val is not None:
+                val = tuple(float(x) for x in val)
+                setattr(args, name, val)
+
+    # -------- derived fields --------
+    if hasattr(args, "thOccLow") and hasattr(args, "thOccHigh"):
+        args.thOccLim = (float(args.thOccLow), float(args.thOccHigh))
+
+    if hasattr(args, "blockSize"):
+        args.chunks = args.blockSize
+
+    return args
+
+
 def parse(config_json=None):
     """
     Parse the arguments with default values.
@@ -167,38 +226,34 @@ def parse(config_json=None):
     parser.add_argument('--distThRH', nargs=2, type=float, default=[1.0, 1.0],
                         help='RH thresholds [wind_inclusive, glacial_exclusive] used in dist_th bimodality GMM validation. Default [1.0, 1.0].')
 
+    # -----------------------------
+    # morph thresholds
+    # -----------------------------
+    parser.add_argument('--morphPreBlockSize', type=int, default=1000,
+                        help='Block size for morph_pre. Default 1000.')
+
+    parser.add_argument('--morphPrePatchSize', type=int, default=500,
+                        help='Minimum patch size for patchBimodal. Default 500.')
+
+    parser.add_argument('--morphPrePC', nargs=2, type=float, default=[0.15, 0.85],
+                        help='PC range for morph_pre GMM validation. Default [0.15, 0.85].')
+
+    parser.add_argument('--morphPreAD', type=float, default=2.0,
+                        help='AD threshold for morph_pre GMM validation. Default 2.0.')
+
+    parser.add_argument('--morphPreRH', type=float, default=0.3,
+                        help='RH threshold for morph_pre GMM validation. Default 0.3.')
+
+    parser.add_argument('--morphPreDist2Mean', type=float, default=0.1,
+                        help='Distance-to-mean threshold for morph_pre GMM validation. Default 0.1.')
+
     # ---- current workflow / io ----
     parser.add_argument('--OUT_PATH', type=str, default='.')
     parser.add_argument('--filepath_list', nargs='*', default=[])
 
     args, unparsed = parser.parse_known_args()
 
-    # ---- normalize / derived fields ----
-    args.thOccLim = (float(args.thOccLow), float(args.thOccHigh))
-    args.blockSize = int(args.blockSize)
-    args.chunks = args.blockSize
-
-    args.thFrac = float(args.thFrac)
-    args.showProg = bool(args.showProg)
-    args.writeSampleMap = bool(args.writeSampleMap)
-    args.thPC = (float(args.thPC[0]), float(args.thPC[1]))
-    args.maxENL = float(args.maxENL)
-    args.thKLD = float(args.thKLD)
-    args.thNSE = float(args.thNSE)
-    args.thR2 = float(args.thR2)
-    args.writeSampleDist = bool(args.writeSampleDist)
-
-    args.distThKLD = (float(args.distThKLD[0]), float(args.distThKLD[1]))
-    args.distThR = (float(args.distThR[0]), float(args.distThR[1]))
-    args.distThNSE = (float(args.distThNSE[0]), float(args.distThNSE[1]))
-    args.distThDist2Mean = float(args.distThDist2Mean)
-    args.distThSampleSize = int(args.distThSampleSize)
-    args.distThRPW = (float(args.distThRPW[0]), float(args.distThRPW[1]))
-    args.distThPC = (float(args.distThPC[0]), float(args.distThPC[1]))
-    args.distThAD = float(args.distThAD)
-    args.distThRH = (float(args.distThRH[0]), float(args.distThRH[1]))
-
-    # ---- config override ----
+    # ---- config override first ----
     if config_json is not None:
         with open(config_json, 'r') as f:
             loaded_args = json.load(f)
@@ -206,27 +261,8 @@ def parse(config_json=None):
         for k, v in loaded_args.items():
             setattr(args, k, v)
 
-        # normalize again after override
-        args.Iter = _str2bool(getattr(args, "Iter", args.Iter))
-        args.showDist = _str2bool(getattr(args, "showDist", args.showDist))
-        args.writeSampleMap = _str2bool(getattr(args, "writeSampleMap", args.writeSampleMap))
-        args.showProg = _str2bool(getattr(args, "showProg", args.showProg))
-        args.showProgress = _str2bool(getattr(args, "showProgress", args.showProgress))
-        args.imported = _str2bool(getattr(args, "imported", args.imported))
-        args.optIterAlg = _str2bool(getattr(args, "optIterAlg", args.optIterAlg))
-        args.bInitialized = _str2bool(getattr(args, "bInitialized", args.bInitialized))
-        args.bExport = _str2bool(getattr(args, "bExport", args.bExport))
-        args.floodimage = _str2bool(getattr(args, "floodimage", args.floodimage))
-        args.failed = _str2bool(getattr(args, "failed", args.failed))
-        args.writeSampleDist = _str2bool(getattr(args, "writeSampleDist", args.writeSampleDist))
-
-        args.thOccLow = float(getattr(args, "thOccLow", args.thOccLow))
-        args.thOccHigh = float(getattr(args, "thOccHigh", args.thOccHigh))
-        args.thOccLim = (args.thOccLow, args.thOccHigh)
-
-        args.thPC = tuple(getattr(args, "thPC", args.thPC))
-        args.blockSize = int(getattr(args, "blockSize", args.blockSize))
-        args.chunks = args.blockSize
+    # ---- normalize once ----
+    args = normalize_args(args)
 
     return args
 
@@ -410,12 +446,16 @@ def _infer_scene_name(filepath):
 @tim
 def Binary_classification_dualpol(args_scene, ds_scene):
     """
-    Run Binary_classification twice on one scene:
-      - once for VV
-      - once for VH (if available)
-    Return a scene package for later morphology/fusion.
+    Run Binary_classification for VV and VH on one scene.
+    Single-pol input is not supported.
     """
     print(f"[Binary_classification_dualpol] start scene: {args_scene.granules}", flush=True)
+
+    if not getattr(args_scene, "dual_pol", False):
+        raise ValueError(
+            "Binary_classification_dualpol requires dual-polarization input (VV + VH). "
+            "Single-pol scenes are not supported in the current RAPID workflow."
+        )
 
     scene_pack = {
         "scene_args": args_scene,
@@ -423,11 +463,7 @@ def Binary_classification_dualpol(args_scene, ds_scene):
         "pol_results": {}
     }
 
-    pols = ["VV"]
-    if getattr(args_scene, "dual_pol", False):
-        pols.append("VH")
-
-    for pol in pols:
+    for pol in ["VV", "VH"]:
         print(f"[Binary_classification_dualpol] start {pol}", flush=True)
         args_pol = _make_pol_args(args_scene, pol)
         ds_pol = _make_single_pol_ds(ds_scene, pol)
@@ -445,23 +481,8 @@ def Binary_classification_dualpol(args_scene, ds_scene):
 def Morph_proc_scene(scene_pack):
     """
     Scene-level morphology wrapper.
-
-    Current temporary rule:
-      - if both VV and VH exist, keep both results in the package
-      - call old Morph_proc only on VV branch as a temporary placeholder
-      - you can later replace this with a real VV/VH fusion strategy
-
-    Because we have not rewritten Morpho_process.py yet, this wrapper is only
-    defining the scene-level interface.
     """
-    if "VV" not in scene_pack["pol_results"]:
-        raise ValueError("VV result is required in scene_pack['pol_results'].")
-
-    args_vv, ds_vv = scene_pack["pol_results"]["VV"]
-
-    print("[Morph_proc_scene] temporary behavior: run old Morph_proc on VV only", flush=True)
-    args_vv, ds_vv = Morph_proc(args_vv, ds_vv)
-    scene_pack["pol_results"]["VV"] = (args_vv, ds_vv)
+    scene_pack = morph_pre_scene(scene_pack)
 
     return scene_pack
 
