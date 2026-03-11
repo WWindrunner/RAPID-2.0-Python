@@ -360,3 +360,324 @@ def morph_pre_scene(scene_pack, blockSize=None):
     }
 
     return scene_pack
+
+
+@dask.delayed
+def morph_block_worker_pre(
+    iR,
+    iC,
+    r0Load,
+    c0Load,
+    nRowsLoad,
+    nColsLoad,
+    rs, re, cs, ce,
+    r0Save, c0Save,
+    fileWB_vv,
+    fileWB_vh,
+    fileThFine_vv,
+    fileThFine_vh,
+    Ipp_block,
+    Iqp_block,
+    LCC_block,
+    water_occ_block,
+    nCatPP,
+    nCatQP,
+    idx_vv,
+    idx_vh,
+    thGlobal,
+    isWindy,
+    WBClasses,
+):
+    """
+    First-half port of morph_worker.m
+    Returns intermediate arrays needed by the second half.
+    """
+    # --- read initial binary classification results ---
+    rasWBCo = _read_window_tif(fileWB_vv, r0Load, c0Load, nRowsLoad, nColsLoad)
+    rasWBCross = _read_window_tif(fileWB_vh, r0Load, c0Load, nRowsLoad, nColsLoad)
+
+    # --- in-memory inputs ---
+    Ipp = Ipp_block.compute() if hasattr(Ipp_block, "compute") else Ipp_block
+    Iqp = Iqp_block.compute() if hasattr(Iqp_block, "compute") else Iqp_block
+    LCC = LCC_block.compute() if hasattr(LCC_block, "compute") else LCC_block
+    water_occ = water_occ_block.compute() if hasattr(water_occ_block, "compute") else water_occ_block
+
+    Ipp = np.asarray(Ipp, dtype=np.float64)
+    Iqp = np.asarray(Iqp, dtype=np.float64)
+    LCC = np.asarray(LCC)
+    water_occ = np.asarray(water_occ, dtype=np.float64)
+
+    rows, cols = rasWBCo.shape
+    rasWB = np.zeros((rows, cols), dtype=np.float64)
+
+    # MATLAB:
+    # Ipp(Ipp==0)=NaN;
+    # Ipp(Iqp==0)=NaN;
+    Ipp[Ipp == 0] = np.nan
+    Ipp[Iqp == 0] = np.nan
+    Iqp[Iqp == 0] = np.nan
+
+    # --- load threshold stacks ---
+    thpp = np.zeros((rows, cols, nCatPP + 1), dtype=np.float64)
+    thqp = np.zeros((rows, cols, nCatQP + 1), dtype=np.float64)
+
+    for c in range(1, nCatPP + 2):
+        thpp[:, :, c - 1] = _read_window_tif(f"{fileThFine_vv}{c}.tif", r0Load, c0Load, nRowsLoad, nColsLoad)
+
+    for c in range(1, nCatQP + 2):
+        thqp[:, :, c - 1] = _read_window_tif(f"{fileThFine_vh}{c}.tif", r0Load, c0Load, nRowsLoad, nColsLoad)
+
+    # --- masks ---
+    maskOut = np.isnan(rasWBCo) | np.isnan(rasWBCross)
+    rasWB[maskOut] = np.nan
+
+    # step 1) generate seeds
+    isPW = np.isin(LCC, WBClasses)
+    maskPW = isPW & (~maskOut)
+
+    # highly credible persistent water
+    maskPWHighCred = maskPW & ((rasWBCo > 0) | (rasWBCross > 0))
+    rasWB[maskPWHighCred] = 1
+
+    # highly credible water with positive water occurrence
+    if isWindy:
+        maskWaterProb = (
+            (~maskPWHighCred)
+            & (water_occ > 0)
+            & ((rasWBCo > 0) | (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1)))
+            & (~maskOut)
+        )
+    else:
+        maskWaterProb = (
+            (~maskPWHighCred)
+            & (water_occ > 0)
+            & (rasWBCo > 0)
+            & (~maskOut)
+        )
+    rasWB[maskWaterProb] = 2
+
+    # highly credible water at zero water occurrence
+    if isWindy:
+        maskOtherHighCred = (
+            ((rasWBCo == idx_vv[0]) | (rasWBCo == (nCatPP + 1)) |
+             (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1)))
+            & (rasWB == 0)
+            & (~maskOut)
+        )
+    else:
+        maskOtherHighCred = (
+            ((rasWBCo == idx_vv[0]) | (rasWBCo == (nCatPP + 1)))
+            & (rasWB == 0)
+            & (~maskOut)
+        )
+    rasWB[maskOtherHighCred] = 3
+
+    # moderately credible
+    if len(idx_vv) >= 2:
+        maskOtherModCred = (rasWBCo == idx_vv[1]) & (rasWB == 0) & (~maskOut)
+        rasWB[maskOtherModCred] = 4
+    else:
+        maskOtherModCred = np.zeros_like(rasWB, dtype=bool)
+
+    # low credibility
+    rasWB[(rasWBCo > 0) & (rasWB == 0)] = 5
+
+    # --- merge thresholds for PW ---
+    thppM = np.zeros((rows, cols), dtype=np.float64)
+    for c in range(1, nCatPP + 2):
+        maskC = (rasWBCo == c)
+        thppC = thpp[:, :, c - 1]
+        sel = maskC & maskPWHighCred
+        thppM[sel] = thppC[sel]
+
+    thpp_high = np.maximum(thpp[:, :, idx_vv[0] - 1], thpp[:, :, -1])
+    thqp_high = np.maximum(thqp[:, :, idx_vh[0] - 1], thqp[:, :, -1])
+
+    thqpM = np.zeros((rows, cols), dtype=np.float64)
+    for c in range(1, nCatQP + 2):
+        maskC = (rasWBCross == c)
+        thqpC = thqp[:, :, c - 1]
+        sel = maskC & maskPWHighCred
+        thqpM[sel] = thqpC[sel]
+
+    return {
+        "iR": int(iR),
+        "iC": int(iC),
+        "r0Save": int(r0Save),
+        "c0Save": int(c0Save),
+        "rs": int(rs),
+        "re": int(re),
+        "cs": int(cs),
+        "ce": int(ce),
+
+        "rasWBCo": rasWBCo,
+        "rasWBCross": rasWBCross,
+        "rasWB_init": rasWB,
+
+        "Ipp": Ipp,
+        "Iqp": Iqp,
+        "LCC": LCC,
+        "water_occ": water_occ,
+
+        "thpp": thpp,
+        "thqp": thqp,
+        "thppM": thppM,
+        "thqpM": thqpM,
+        "thpp_high": thpp_high,
+        "thqp_high": thqp_high,
+
+        "maskOut": maskOut,
+        "maskPW": maskPW,
+        "maskPWHighCred": maskPWHighCred,
+        "maskWaterProb": maskWaterProb,
+        "maskOtherHighCred": maskOtherHighCred,
+        "maskOtherModCred": maskOtherModCred,
+
+        "thGlobal": float(thGlobal) if np.isfinite(thGlobal) else np.nan,
+        "isWindy": int(isWindy),
+    }
+
+
+def morph_proc_scene_main(scene_pack, blockSize=None):
+    """
+    Main morph processing after morph_pre.
+    This version ports the admin logic + worker first half.
+    """
+    pol_results = scene_pack["pol_results"]
+
+    if "VV" not in pol_results or "VH" not in pol_results:
+        raise ValueError("Morph processing requires dual-polarization results (VV + VH).")
+
+    args_vv, ds_vv = pol_results["VV"]
+    args_vh, ds_vh = pol_results["VH"]
+
+    if "morph_pre" not in scene_pack:
+        raise ValueError("scene_pack['morph_pre'] is missing. Run morph_pre_scene first.")
+
+    morph_pre = scene_pack["morph_pre"]
+    thBimodal = np.asarray(morph_pre.get("thBimodal", []), dtype=float).reshape(-1)
+    thBimodal = thBimodal[np.isfinite(thBimodal) & (~np.isinf(thBimodal))]
+    isWindy = int(morph_pre.get("isWindy", 0))
+
+    if blockSize is None:
+        blockSize = int(getattr(args_vv, "morphPreBlockSize", 1000))
+
+    dirMorph = getattr(args_vv, "dirMorph", os.path.join(args_vv.dirOut, "Morph"))
+    os.makedirs(dirMorph, exist_ok=True)
+
+    fileMorphOut = os.path.join(dirMorph, "Morph_final.tif")
+    fileMorphRoot = os.path.join(dirMorph, "MorphBlock_")
+
+    # binary outputs
+    fileWB_vv = getattr(args_vv, "fileCatInit", os.path.join(args_vv.dirOut, "Cat_init.tif"))
+    fileWB_vh = getattr(args_vh, "fileCatInit", os.path.join(args_vh.dirOut, "Cat_init.tif"))
+
+    # fine threshold roots
+    fileThFine_vv = getattr(args_vv, "fileThFine_root", os.path.join(args_vv.dirTempPol, "ThFine_"))
+    fileThFine_vh = getattr(args_vh, "fileThFine_root", os.path.join(args_vh.dirTempPol, "ThFine_"))
+
+    # class stats
+    Cpp = np.asarray(ds_vv.sigma2, dtype=float).reshape(-1)
+    Cqp = np.asarray(ds_vh.sigma2, dtype=float).reshape(-1)
+
+    nCatPP = int(Cpp.size)
+    nCatQP = int(Cqp.size)
+    idx_vv = np.argsort(Cpp) + 1
+    idx_vh = np.argsort(Cqp) + 1
+
+    # global threshold from morph_pre
+    if thBimodal.size > 0:
+        thPrcBimodal = float(getattr(args_vv, "thPrcBimodal", 50.0))
+        thGlobal_db = float(np.percentile(thBimodal, thPrcBimodal))
+        thGlobal = 10.0 ** (thGlobal_db / 10.0)
+    else:
+        thGlobal_db = np.nan
+        thGlobal = np.nan
+
+    WBClasses = np.asarray(getattr(args_vv, "WBClasses", [5, 6, 50, 60]), dtype=int)
+
+    with rasterio.open(fileWB_vv) as src:
+        rowsImage = src.height
+        colsImage = src.width
+
+    nR, nC, r0, c0, nRows, nCols, _, _ = get_block(
+        rowsImage,
+        colsImage,
+        block_size=blockSize,
+        overlap=int(blockSize / 2),
+        offset=False,
+        keep_size=False,
+    )
+
+    tasks = []
+    print("Morphologic processing:")
+    for iR in range(int(nR)):
+        for iC in range(int(nC)):
+            prog = ((iR) * int(nC) + iC + 1) / (int(nR) * int(nC))
+            print(f"{int(prog * 100)}% ({iR+1},{iC+1})/({nR},{nC})...")
+
+            # READ window
+            r0Load = int(r0[iR, 0])
+            nRowsLoad = int(nRows[iR, 0])
+            c0Load = int(c0[iC, 0])
+            nColsLoad = int(nCols[iC, 0])
+
+            # PROCESS crop inside read window
+            rs = int(r0[iR, 1] - r0[iR, 0])
+            re = int(rs + nRows[iR, 1] - 1)
+            cs = int(c0[iC, 1] - c0[iC, 0])
+            ce = int(cs + nCols[iC, 1] - 1)
+
+            r0Save = int(r0[iR, 1])
+            c0Save = int(c0[iC, 1])
+
+            Ipp_block = ds_vv.img_lp[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
+            Iqp_block = ds_vh.img_lp[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
+            LCC_block = ds_vv.land_cover[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
+            water_occ_block = ds_vv.water_occurrence[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
+
+            tasks.append(
+                morph_block_worker_pre(
+                    iR=iR,
+                    iC=iC,
+                    r0Load=r0Load,
+                    c0Load=c0Load,
+                    nRowsLoad=nRowsLoad,
+                    nColsLoad=nColsLoad,
+                    rs=rs,
+                    re=re,
+                    cs=cs,
+                    ce=ce,
+                    r0Save=r0Save,
+                    c0Save=c0Save,
+                    fileWB_vv=fileWB_vv,
+                    fileWB_vh=fileWB_vh,
+                    fileThFine_vv=fileThFine_vv,
+                    fileThFine_vh=fileThFine_vh,
+                    Ipp_block=Ipp_block,
+                    Iqp_block=Iqp_block,
+                    LCC_block=LCC_block,
+                    water_occ_block=water_occ_block,
+                    nCatPP=nCatPP,
+                    nCatQP=nCatQP,
+                    idx_vv=idx_vv,
+                    idx_vh=idx_vh,
+                    thGlobal=thGlobal,
+                    isWindy=isWindy,
+                    WBClasses=WBClasses,
+                )
+            )
+
+    results = dask.compute(*tasks)
+
+    scene_pack["morph_proc"] = {
+        "fileMorphOut": fileMorphOut,
+        "fileMorphRoot": fileMorphRoot,
+        "thGlobal": thGlobal,
+        "thGlobal_db": thGlobal_db,
+        "isWindy": isWindy,
+        "block_results_pre": list(results),
+    }
+
+    print("finished morphological process (first half only)")
+    return scene_pack

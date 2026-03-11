@@ -483,7 +483,7 @@ def Morph_proc_scene(scene_pack):
     Scene-level morphology wrapper.
     """
     scene_pack = morph_pre_scene(scene_pack)
-
+    scene_pack = morph_proc_scene_main(scene_pack)
     return scene_pack
 
 
