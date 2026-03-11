@@ -63,6 +63,7 @@ def normalize_args(args):
         "distThSampleSize",
         "morphPreBlockSize",
         "morphPrePatchSize",
+        "blockSizeMorph",
     ]
     for name in int_fields:
         if hasattr(args, name):
@@ -73,6 +74,7 @@ def normalize_args(args):
         "maxENL", "thKLD", "thNSE", "thR2",
         "distThDist2Mean", "distThAD",
         "morphPreAD", "morphPreRH", "morphPreDist2Mean",
+        "thInund", "rInund", "rProb",
     ]
     for name in float_fields:
         if hasattr(args, name):
@@ -91,12 +93,43 @@ def normalize_args(args):
                 val = tuple(float(x) for x in val)
                 setattr(args, name, val)
 
+    list_num_fields = [
+        "WBClasses",
+        "nWBClasses",
+        "thPrcBimodal",
+        "rNWB_WST",
+        "thSizeMorph",
+        "thCompMorph",
+    ]
+    for name in list_num_fields:
+        if hasattr(args, name):
+            val = getattr(args, name)
+            if val is not None:
+                # preserve ints for class codes, floats otherwise
+                if name in ("WBClasses", "nWBClasses"):
+                    setattr(args, name, [int(x) for x in val])
+                else:
+                    setattr(args, name, [float(x) for x in val])
+
     # -------- derived fields --------
     if hasattr(args, "thOccLow") and hasattr(args, "thOccHigh"):
         args.thOccLim = (float(args.thOccLow), float(args.thOccHigh))
 
     if hasattr(args, "blockSize"):
         args.chunks = args.blockSize
+
+    # compatibility aliases for already-written code
+    if hasattr(args, "rNWB_WST"):
+        args.rNWB_morph = np.asarray(args.rNWB_WST, dtype=float)
+
+    if hasattr(args, "thSizeMorph"):
+        args.thSize_morph = np.asarray(args.thSizeMorph, dtype=float)
+
+    if hasattr(args, "thCompMorph"):
+        args.thCompactness = np.asarray(args.thCompMorph, dtype=float)
+
+    if hasattr(args, "blockSizeMorph"):
+        args.morphPreBlockSize = int(args.blockSizeMorph)
 
     return args
 
@@ -246,6 +279,45 @@ def parse(config_json=None):
 
     parser.add_argument('--morphPreDist2Mean', type=float, default=0.1,
                         help='Distance-to-mean threshold for morph_pre GMM validation. Default 0.1.')
+
+    # -----------------------------
+    # morph parameters
+    # -----------------------------
+    parser.add_argument('--morph', type=str, default='morph/',
+                        help='Relative morph output folder name. Default morph/.')
+
+    parser.add_argument('--optMorph', type=str, default='LCC_only',
+                        help='Morph algorithm option. Default LCC_only.')
+
+    parser.add_argument('--WBClasses', nargs='*', type=int, default=[80, 90, 95],
+                        help='LCC water classes used in morphology. Default [80, 90, 95].')
+
+    parser.add_argument('--nWBClasses', nargs='*', type=int, default=[50],
+                        help='LCC non-water / built-up classes used for removal tests. Default [50].')
+
+    parser.add_argument('--thPrcBimodal', nargs='*', type=float, default=[50, 25, 10],
+                        help='Percentiles of bimodality thresholds. Default [50, 25, 10].')
+
+    parser.add_argument('--rNWB_WST', nargs='*', type=float, default=[0.3, 0.3, 0.4, 0.4, 0.4],
+                        help='Maximum built-up fraction allowed for each credibility level in morphology. Default [0.3, 0.3, 0.4, 0.4, 0.4].')
+
+    parser.add_argument('--thSizeMorph', nargs='*', type=float, default=[10, 10, 10, 10, 50],
+                        help='Minimum object size for each credibility level in morphology. Default [10, 10, 10, 10, 50].')
+
+    parser.add_argument('--thCompMorph', nargs='*', type=float, default=[0, 0, 0.25, 1, 2],
+                        help='Compactness thresholds for each credibility level in morphology. Default [0, 0, 0.25, 1, 2].')
+
+    parser.add_argument('--thInund', type=float, default=0.3,
+                        help='Minimal change fraction for inundation logic. Default 0.3.')
+
+    parser.add_argument('--rInund', type=float, default=1.0,
+                        help='Area change ratio threshold for inundation logic. Default 1.0.')
+
+    parser.add_argument('--rProb', type=float, default=0.5,
+                        help='Minimum ratio of high-probability pixels to total area. Default 0.5.')
+
+    parser.add_argument('--blockSizeMorph', type=int, default=3000,
+                        help='Block size for morphology stage. Default 3000.')
 
     # ---- current workflow / io ----
     parser.add_argument('--OUT_PATH', type=str, default='.')
