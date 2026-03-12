@@ -13,6 +13,7 @@ from Dist_th import thresholdGMM_Dual
 from Statistics import get_block
 from utils import *
 from affine import Affine
+from collections import deque
 
 
 def _read_window_from_tif(path: str, r0: int, c0: int, nRows: int, nCols: int):
@@ -382,8 +383,180 @@ def _positive_stat(v, mode: str):
         raise ValueError(f"unknown thresholding option: {mode}")
 
 
-def binary_regiongrow(*args, **kwargs):
-    raise NotImplementedError("binary_regiongrow is not implemented yet.")
+def _neighbor_offsets(nNeighbor=4, nWin=0):
+    """
+    Match MATLAB neighbor definition.
+    """
+    if nNeighbor == 8:
+        dr = np.array([-1, -1, -1,  0, 0, 1, 1, 1], dtype=int)
+        dc = np.array([-1,  0,  1, -1, 1,-1, 0, 1], dtype=int)
+    elif nNeighbor == 4:
+        dr = np.array([0, -1, 1, 0], dtype=int)
+        dc = np.array([-1, 0, 0, 1], dtype=int)
+    elif nWin > 0:
+        expected = (nWin * 2 + 1) ** 2 - 1
+        if nNeighbor != expected:
+            nNeighbor = expected
+        rr = np.arange(-nWin, nWin + 1, dtype=int)
+        cc = rr.copy()
+        dc_grid, dr_grid = np.meshgrid(cc, rr)
+        dr = dr_grid.ravel()
+        dc = dc_grid.ravel()
+        center = (dr == 0) & (dc == 0)
+        dr = dr[~center]
+        dc = dc[~center]
+    else:
+        raise ValueError(f"Unsupported neighbor setup: nNeighbor={nNeighbor}, nWin={nWin}")
+    return dr, dc
+
+
+def _single_object_regiongrow(I, rowSeed, colSeed, nNeighbor=4, nWin=0):
+    """
+    Python equivalent of MATLAB binary_regiongrow(..., 'singleObject', ...)
+    Returns boolean mask.
+    Assumes rowSeed/colSeed are 0-based.
+    """
+    I = np.asarray(I)
+    rows, cols = I.shape
+
+    # MATLAB logic: if ~islogical(I), I=logical(I)
+    # Also reject NaN / False / out-of-mask
+    valid_mask = np.isfinite(I) & (I != 0)
+
+    CM = np.zeros((rows, cols), dtype=bool)
+
+    rowSeed = np.asarray(rowSeed, dtype=int).reshape(-1)
+    colSeed = np.asarray(colSeed, dtype=int).reshape(-1)
+
+    # keep only valid seeds inside mask
+    inside = (rowSeed >= 0) & (rowSeed < rows) & (colSeed >= 0) & (colSeed < cols)
+    rowSeed = rowSeed[inside]
+    colSeed = colSeed[inside]
+
+    if rowSeed.size == 0:
+        return CM
+
+    seed_valid = valid_mask[rowSeed, colSeed]
+    rowSeed = rowSeed[seed_valid]
+    colSeed = colSeed[seed_valid]
+
+    if rowSeed.size == 0:
+        return CM
+
+    dr, dc = _neighbor_offsets(nNeighbor=nNeighbor, nWin=nWin)
+
+    q = deque()
+    for r, c in zip(rowSeed, colSeed):
+        if not CM[r, c]:
+            CM[r, c] = True
+            q.append((int(r), int(c)))
+
+    while q:
+        r0, c0 = q.popleft()
+        for drr, dcc in zip(dr, dc):
+            r = r0 + int(drr)
+            c = c0 + int(dcc)
+
+            if r < 0 or r >= rows or c < 0 or c >= cols:
+                continue
+            if CM[r, c]:
+                continue
+            if not valid_mask[r, c]:
+                continue
+
+            CM[r, c] = True
+            q.append((r, c))
+
+    return CM
+
+
+def binary_regiongrow(I, rowSeed, colSeed, opt, nNeighbor, nWin, showProg, C0=None, mCID=None):
+    """
+    Python port of MATLAB binary_regiongrow.m
+
+    Parameters
+    ----------
+    I : 2D array
+        Boolean-like image / mask.
+    rowSeed, colSeed : array-like or scalar
+        Seed coordinates, 0-based in Python.
+    opt : str
+        'singleObject' or e.g. 'codedObject'
+    nNeighbor : int
+        4, 8, or custom based on nWin.
+    nWin : int
+        Used when neighborhood is custom.
+    showProg : bool
+        Ignored in Python version.
+    C0 : optional 2D label map
+        Existing coded map.
+    mCID : optional int
+        Starting label after C0.
+
+    Returns
+    -------
+    CM : 2D bool or 2D int
+    optionally c_next if coded mode (to mimic varargout={c})
+    """
+    I = np.asarray(I)
+    rows, cols = I.shape
+
+    rowSeed = np.asarray(rowSeed, dtype=int).reshape(-1)
+    colSeed = np.asarray(colSeed, dtype=int).reshape(-1)
+
+    if str(opt).lower() == "singleobject":
+        CM = _single_object_regiongrow(I, rowSeed, colSeed, nNeighbor=nNeighbor, nWin=nWin)
+        return CM
+
+    # -------------------------------------------------
+    # coded-object mode
+    # -------------------------------------------------
+    CM = np.zeros((rows, cols), dtype=np.int32)
+    c = 1
+
+    if C0 is not None:
+        C0 = np.asarray(C0)
+        if C0.shape != (rows, cols):
+            raise ValueError(f"C0 shape mismatch: expected {(rows, cols)}, got {C0.shape}")
+
+        CM[:] = C0.astype(np.int32, copy=False)
+
+        rowSeed0, colSeed0 = np.where(C0 > 0)
+        if rowSeed0.size > 0:
+            # remove seed-groups already represented in C0
+            rowSeed0 = rowSeed0.astype(int)
+            colSeed0 = colSeed0.astype(int)
+
+            while rowSeed0.size > 0:
+                iCM = _single_object_regiongrow(I, rowSeed0[0], colSeed0[0], nNeighbor=nNeighbor, nWin=nWin)
+                CM[iCM] = int(C0[rowSeed0[0], colSeed0[0]])
+
+                # remove seeds covered by this region from rowSeed0/colSeed0
+                keep0 = ~iCM[rowSeed0, colSeed0]
+                rowSeed0 = rowSeed0[keep0]
+                colSeed0 = colSeed0[keep0]
+
+                # also remove covered seeds from rowSeed/colSeed
+                if rowSeed.size > 0:
+                    keep = ~iCM[rowSeed, colSeed]
+                    rowSeed = rowSeed[keep]
+                    colSeed = colSeed[keep]
+
+            if mCID is not None:
+                c = int(mCID)
+
+    totalSeeds = rowSeed.size
+
+    while rowSeed.size > 0:
+        iCM = _single_object_regiongrow(I, rowSeed[0], colSeed[0], nNeighbor=nNeighbor, nWin=nWin)
+        CM[iCM] = int(c)
+        c += 1
+
+        keep = ~iCM[rowSeed, colSeed]
+        rowSeed = rowSeed[keep]
+        colSeed = colSeed[keep]
+
+    return CM, c
 
 
 def extendTh(rSeeds, cSeeds, WBMax, CM, thMatIn, optTh, thBimodal):
@@ -429,7 +602,7 @@ def extendTh(rSeeds, cSeeds, WBMax, CM, thMatIn, optTh, thBimodal):
 
     # build CM if needed
     if CM is None or (hasattr(CM, "size") and np.size(CM) == 0):
-        CM = binary_regiongrow(WBMax, rSeeds, cSeeds, 'codedObject', 4, 0, True)
+        CM, _ = binary_regiongrow(WBMax, rSeeds, cSeeds, 'codedObject', 4, 0, True)
 
     CM = np.asarray(CM)
     if CM.shape != (rows, cols):
@@ -919,7 +1092,7 @@ def morph_block_worker(
 
         # MATLAB uses only 4 layers in CM even though nCred=5
         if credibility <= 4:
-            CM[:, :, credibility - 1] = binary_regiongrow(maskExt, RSeeds, CSeeds, 'codedObject', 8, 0, True)
+            CM[:, :, credibility - 1], _ = binary_regiongrow(maskExt, RSeeds, CSeeds, 'codedObject', 8, 0, True)
             CMc = CM[:, :, credibility - 1]
         else:
             # keep last credibility using previous CM logic if needed
