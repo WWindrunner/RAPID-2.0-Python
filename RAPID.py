@@ -163,18 +163,13 @@ def parse(config_json=None):
     parser.add_argument('--nInter', type=int, default=100)
     parser.add_argument('--morpho_seed_type', type=str, default='both')
 
-    parser.add_argument('--nWBClasses', nargs='*', type=int, default=[8, 80])
-    parser.add_argument('--WBClasses', nargs='*', type=int, default=[5, 6, 50, 60])
+    parser.add_argument('--nWBClasses_old', nargs='*', type=int, default=[8, 80])
+    parser.add_argument('--WBClasses_old', nargs='*', type=int, default=[5, 6, 50, 60])
 
     parser.add_argument('--thSensPre', type=float, default=0.2)
     parser.add_argument('--thSensIn', type=float, default=0.1)
     parser.add_argument('--rNWB_WST_Org', type=float, default=0.3)
-    parser.add_argument('--rNWB_WST', type=float, default=0.4)
     parser.add_argument('--rNWB_ICD', type=float, default=0.8)
-    parser.add_argument('--thSize', type=int, default=10)
-    parser.add_argument('--thInund', type=float, default=0.3)
-    parser.add_argument('--rInund', type=float, default=1.0)
-    parser.add_argument('--rProb', type=float, default=0.5)
 
     parser.add_argument('--imported', type=_str2bool, default=False)
     parser.add_argument('--optIterAlg', type=_str2bool, default=True)
