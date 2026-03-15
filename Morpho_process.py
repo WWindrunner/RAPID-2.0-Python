@@ -994,12 +994,9 @@ def morph_block_worker(
     RSeeds, CSeeds = np.where(maskSeeds)
     if RSeeds.size > 0:
         thPWppBlock, maskPatches, CM = extendTh(RSeeds, CSeeds, maskPW, None, thppM, 'prc90', None)
-        thPWqpBlock = extendTh(RSeeds, CSeeds, maskPW, CM, thqpM, 'prc90', None)
+        thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, maskPW, CM, thqpM, 'prc90', None)
 
-        accept = (
-            (Ipp < thPWppBlock) |
-            (Iqp < thPWqpBlock)
-        )
+        accept = (Ipp < thPWppBlock) | (Iqp < thPWqpBlock)
         rasWB[maskPatches] = 1 * accept[maskPatches]
 
     mask_thHigh = (rasWB == 1) & ((rasWBCo == idx_vv[0]) | (rasWBCo == nCatPP + 1))
@@ -1012,16 +1009,16 @@ def morph_block_worker(
     maskSeeds = (rasWB == 2)
     RSeeds, CSeeds = np.where(maskSeeds)
     if RSeeds.size > 0:
-        thPWppBlock, maskPatches = extendTh(RSeeds, CSeeds, maskSeeds, None, thpp_high, 'prc90', None)
-        thPWqpBlock = extendTh(RSeeds, CSeeds, maskSeeds, None, thqp_high, 'prc90', None)
+        thPWppBlock, maskPatches, _ = extendTh(RSeeds, CSeeds, maskSeeds, None, thpp_high, 'prc90', None)
+        thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, maskSeeds, None, thqp_high, 'prc90', None)
 
         thPWppBlock = np.asarray(thPWppBlock, dtype=float)
         maskPatches = np.asarray(maskPatches, dtype=bool)
 
         fill_val = thGlobal if np.isfinite(thGlobal) else 0.0
         thPWppBlock[maskPatches] = (
-            thPWppBlock[maskPatches] * (thPWppBlock[maskPatches] > 0)
-            + fill_val * (thPWppBlock[maskPatches] <= 0)
+                thPWppBlock[maskPatches] * (thPWppBlock[maskPatches] > 0)
+                + fill_val * (thPWppBlock[maskPatches] <= 0)
         )
 
         if isWindy:
@@ -1036,8 +1033,8 @@ def morph_block_worker(
     if RSeeds.size > 0:
         if isWindy:
             WBMax = ((rasWBCo > 0) | (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1))) & (rasWB > 2)
-            thMatOut, maskPatches = extendTh(RSeeds, CSeeds, WBMax, None, thpp_high, 'prc90', None)
-            thPWqpBlock = extendTh(RSeeds, CSeeds, WBMax, None, thqp_high, 'prc90', None)
+            thMatOut, maskPatches, _ = extendTh(RSeeds, CSeeds, WBMax, None, thpp_high, 'prc90', None)
+            thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, WBMax, None, thqp_high, 'prc90', None)
 
             cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
             thMatOut = np.minimum(thMatOut, cap_val) if np.isfinite(cap_val) else thMatOut
@@ -1046,7 +1043,7 @@ def morph_block_worker(
             rasWB[maskPatches] = 3 * accept[maskPatches]
         else:
             WBMax = (rasWBCo > 0) & (rasWB > 2)
-            thMatOut, maskPatches = extendTh(RSeeds, CSeeds, WBMax, None, thpp_high, 'prc90', None)
+            thMatOut, maskPatches, _ = extendTh(RSeeds, CSeeds, WBMax, None, thpp_high, 'prc90', None)
 
             cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
             thMatOut = np.minimum(thMatOut, cap_val) if np.isfinite(cap_val) else thMatOut
@@ -1059,7 +1056,7 @@ def morph_block_worker(
     if np.any(maskSeeds):
         RSeeds, CSeeds = np.where(maskSeeds)
         WBMax = (rasWBCo > 0) & (rasWB > 3)
-        thMatOut, maskPatches = extendTh(RSeeds, CSeeds, WBMax, None, thpp[:, :, idx_vv[1] - 1], 'prc90', None)
+        thMatOut, maskPatches, _ = extendTh(RSeeds, CSeeds, WBMax, None, thpp[:, :, idx_vv[1] - 1], 'prc90', None)
 
         cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
         thMatOut = np.minimum(thMatOut, cap_val) if np.isfinite(cap_val) else thMatOut
