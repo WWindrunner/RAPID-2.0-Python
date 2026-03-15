@@ -726,9 +726,14 @@ def findRange_bimodality(args, ds):
     #    print("ocean_mask unique counts (sample patch):", dict(zip(vals.tolist(), cnts.tolist())))
 
     if not getattr(args, "fileSBAInit", None):
-        if not getattr(args, "OUT_PATH", None):
-            raise ValueError("Need args.fileSBAInit or args.OUT_PATH")
-        args.fileSBAInit = os.path.join(args.OUT_PATH, "SBAInit.mat")
+        if getattr(args, "dirTempPol", None):
+            args.fileSBAInit = os.path.join(args.dirTempPol, "SBAInit.mat")
+        elif getattr(args, "dirOut", None):
+            args.fileSBAInit = os.path.join(args.dirOut, "SBAInit.mat")
+        elif getattr(args, "OUT_PATH", None):
+            args.fileSBAInit = os.path.join(args.OUT_PATH, "SBAInit.mat")
+        else:
+            raise ValueError("Need args.fileSBAInit or one of args.dirTempPol / args.dirOut / args.OUT_PATH")
 
     if os.path.exists(args.fileSBAInit):
         d = loadmat(args.fileSBAInit)
@@ -1074,7 +1079,7 @@ def generate_initial_sample_maps(
         IuCat = np.asarray(ds.Iu).reshape(-1)[maskCat]
 
         fileSampleMap = f"{fileSampleMap_root}{i}.tif"
-        fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.fig")
+        fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.png")
 
         # 1) sample map + pol_water（线性域）
         pol_water = createSampleMapSBA(
@@ -1154,7 +1159,7 @@ def generate_initial_sample_maps(
     if not save_sample_dist:
         for idx0 in np.where(~maskInvalidCat)[0]:
             i = idx0 + 1
-            fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.fig")
+            fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.png")
             if os.path.exists(fileSampleDist):
                 os.remove(fileSampleDist)
 
@@ -1180,11 +1185,26 @@ def optimizeDist6(args, ds):
     # 1) filter windows by modeOcc + count rules
     args, ds = filter_windows_by_modeOcc(args, ds)
 
-    # 2) run init bimodality GMM per window (dask parallel)
-    args, ds = run_init_bimodality_dask(args, ds)
+    # 2) run init bimodality GMM per window
+    if getattr(args, "fileSBAInitUnCat", None) and os.path.exists(args.fileSBAInitUnCat):
+        print("loading SBAInitUnCat cache ...")
+        d = loadmat(args.fileSBAInitUnCat)
+        for k in ["r0Sel", "c0Sel", "nRowsSel", "nColsSel",
+                  "thOcc", "mu1", "Iu", "peakWater", "medianWater", "stdWater"]:
+            if k in d:
+                setattr(ds, k, np.asarray(d[k]).squeeze())
+    else:
+        args, ds = run_init_bimodality_dask(args, ds)
 
     # 3) categorize by peakWater (kmeans) + remove tiny classes + save Cat
-    args, ds = categorize_water_classes(args, ds)
+    if getattr(args, "fileSBAInitCat", None) and os.path.exists(args.fileSBAInitCat):
+        print("loading SBAInitCat cache ...")
+        d = loadmat(args.fileSBAInitCat)
+        for k in ["thOcc", "r0Sel", "c0Sel", "nRowsSel", "nColsSel", "mu1", "Iu", "C", "idx"]:
+            if k in d:
+                setattr(ds, k, np.asarray(d[k]).squeeze())
+    else:
+        args, ds = categorize_water_classes(args, ds)
 
     # 4) per-category sample map + init dist fitting + category screening
     fileSampleMap_root = os.path.join(args.dirTempPol, "SampleMap_")
@@ -1203,7 +1223,6 @@ def optimizeDist6(args, ds):
         showProg=args.showProg,
     )
 
-    # 把关键结果写回 ds，保持 MATLAB 风格“后续函数能直接用 ds.xxx”
     ds.sigma2 = out["sigma2"]
     ds.n_est = out["n_est"]
     ds.binWidth = out["binWidth"]

@@ -441,6 +441,9 @@ def _make_pol_args(args_scene, pol):
     args_pol.dirTempPol = os.path.join(args_scene.dirOut, f"TempPol_{pol}")
     os.makedirs(args_pol.dirTempPol, exist_ok=True)
 
+    args_pol.fileSBAInit = os.path.join(args_pol.dirTempPol, f"SBAInit_{pol}.mat")
+    args_pol.fileSBAInitCat = os.path.join(args_pol.dirTempPol, f"SBAInitCat_{pol}.mat")
+
     args_pol.fileSampleMap = os.path.join(args_pol.dirTempPol, f"SampleMap_{pol}.tif")
     args_pol.fileThCoarse_root = os.path.join(args_pol.dirTempPol, f"ThCoarse_{pol}_")
     args_pol.fileThFine_root = os.path.join(args_pol.dirTempPol, f"ThFine_{pol}_")

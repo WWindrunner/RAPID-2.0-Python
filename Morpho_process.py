@@ -1147,7 +1147,15 @@ def morph_block_worker(
     mask2Remove = np.zeros((rows, cols), dtype=bool)
     for credibility in range(1, nCred + 1):
         if credibility <= 4:
-            mask2Remove = mask2Remove | RoI(CM[:, :, credibility - 1], LCC, nWBClasses, rNWB[credibility - 1], True, 'contain')
+            mask2Remove_i, _ = RoI(
+                CM[:, :, credibility - 1],
+                LCC,
+                nWBClasses,
+                rNWB[credibility - 1],
+                True,
+                'contain'
+            )
+            mask2Remove = mask2Remove | mask2Remove_i
     rasWB[mask2Remove] = 0
 
     # remove small objects / low compactness
@@ -1255,10 +1263,9 @@ def morph_proc_scene_main(scene_pack, blockSize=None):
     EXClasses = np.asarray(getattr(args_vv, "EXClasses", []), dtype=int)
     nWBClasses = np.asarray(getattr(args_vv, "nWBClasses", [8, 80]), dtype=int)
 
-    # these are used in the second half
     rNWB = np.asarray(getattr(args_vv, "rNWB_morph", [0.3, 0.4, 0.4, 0.4, 0.4]), dtype=float)
     thSize = np.asarray(getattr(args_vv, "thSize_morph", [10, 10, 10, 10, 10]), dtype=float)
-    thCompactness = np.asarray(getattr(args_vv, "thCompactness", [0.0, 0.0, 0.0, 0.0, 0.0]), dtype=float)
+    thCompactness = np.asarray(getattr(args_vv, "thCompactness", [0, 0, 0.25, 1, 2]), dtype=float)
 
     with rasterio.open(fileWB_vv) as src:
         rowsImage = src.height
