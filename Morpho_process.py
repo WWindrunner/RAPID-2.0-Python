@@ -9,6 +9,7 @@ from scipy import ndimage
 import dask.dataframe as dd
 import rasterio
 from rasterio.windows import Window
+from rasterio.merge import merge
 from Dist_th import thresholdGMM_Dual
 from Statistics import get_block
 from utils import *
@@ -876,12 +877,17 @@ def morph_block_worker(
     rNWB,
     thSize,
     thCompactness,
+    morph_out_dir,
+    block_transform,
+    crs
 ):
     """
     Full port of morph_worker.m for one block,
     except helper functions not yet provided are left as placeholders.
     Writes one block tif: fileBlock
     """
+    print(f"[morph_block_worker] start ({iR + 1},{iC + 1})", flush=True)
+
     # ---- read initial water masks ----
     rasWBCo = _read_window_from_tif(fileWB_vv, r0Load, c0Load, nRowsLoad, nColsLoad)
     rasWBCross = _read_window_from_tif(fileWB_vh, r0Load, c0Load, nRowsLoad, nColsLoad)
@@ -1201,14 +1207,31 @@ def morph_block_worker(
     valid = np.isfinite(core) & (core >= 0) & (core < 255)
     out[valid] = core[valid].astype(np.uint8)
 
+    # --- write block result ---
+    block_file = os.path.join(
+        morph_out_dir,
+        f"morph_block_{iR}_{iC}.tif"
+    )
+
+    with rasterio.open(
+            block_file,
+            "w",
+            driver="GTiff",
+            height=core.shape[0],
+            width=core.shape[1],
+            count=1,
+            dtype=core.dtype,
+            transform=block_transform,
+            crs=crs
+    ) as dst:
+        dst.write(core, 1)
+
+    print(f"[morph_block_worker] finished block ({iR + 1},{iC + 1})", flush=True)
+
     return {
-        "iR": int(iR),
-        "iC": int(iC),
-        "r0Save": int(r0Save),
-        "c0Save": int(c0Save),
-        "rows": int(out.shape[0]),
-        "cols": int(out.shape[1]),
-        "core": out,
+        "iR": iR,
+        "iC": iC,
+        "file": block_file
     }
 
 
@@ -1286,8 +1309,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None):
     print("Morphologic processing:")
     for iR in range(int(nR)):
         for iC in range(int(nC)):
-            prog = ((iR) * int(nC) + iC + 1) / (int(nR) * int(nC))
-            print(f"{int(prog * 100)}% ({iR+1},{iC+1})/({nR},{nC})...")
+            print(f"[morph_proc_scene_main] queue block ({iR+1},{iC+1})/({nR},{nC})", flush=True)
 
             r0Load = int(r0[iR, 0])
             nRowsLoad = int(nRows[iR, 0])
@@ -1341,44 +1363,57 @@ def morph_proc_scene_main(scene_pack, blockSize=None):
                     rNWB=rNWB,
                     thSize=thSize,
                     thCompactness=thCompactness,
+                    morph_out_dir=dirMorph,
+                    transform=ref_transform,
+                    crs=ref_crs
                 )
             )
 
+    print("[morph_proc_scene_main] submitting morph tasks...", flush=True)
     results = dask.compute(*tasks)
+    print("[morph_proc_scene_main] all morph blocks finished", flush=True)
 
-    # ---- mosaic directly in memory ----
-    full_out = np.full((rowsImage, colsImage), 255, dtype=np.uint8)
+    # ---- mosaic ----
+    print("[morph_proc_scene_main] start mosaic", flush=True)
 
-    for res in results:
-        r0s = int(res["r0Save"])
-        c0s = int(res["c0Save"])
-        rr = int(res["rows"])
-        cc = int(res["cols"])
-        core = np.asarray(res["core"], dtype=np.uint8)
+    block_files = [r["file"] for r in results]
+    src_files = [rasterio.open(f) for f in block_files]
+    try:
+        mosaic, out_trans = rasterio.merge.merge(src_files)
 
-        full_out[r0s:r0s + rr, c0s:c0s + cc] = core
+        with rasterio.open(
+                fileMorphOut,
+                "w",
+                driver="GTiff",
+                height=mosaic.shape[1],
+                width=mosaic.shape[2],
+                count=1,
+                dtype=mosaic.dtype,
+                crs=src_files[0].crs,
+                transform=out_trans,
+                nodata=255,
+                compress="deflate",
+                tiled=True,
+        ) as dst:
+            dst.write(mosaic)
+    finally:
+        for src in src_files:
+            src.close()
+    print("[morph_proc_scene_main] mosaic finished", flush=True)
 
-    # ---- write one final tif only ----
-    out_meta = args_vv.refmeta.copy()
-    out_meta.update(
-        driver="GTiff",
-        count=1,
-        dtype="uint8",
-        nodata=255,
-        compress="deflate",
-        tiled=True,
-    )
-
-    with rasterio.open(fileMorphOut, "w", **out_meta) as dst:
-        dst.write(full_out, 1)
+    print("[morph_proc_scene_main] deleting block files", flush=True)
+    for f in block_files:
+        try:
+            os.remove(f)
+        except:
+            pass
+    print("[morph_proc_scene_main] cleanup finished", flush=True)
 
     scene_pack["morph_proc"] = {
         "fileMorphOut": fileMorphOut,
         "thGlobal": thGlobal,
         "thGlobal_db": thGlobal_db,
         "isWindy": isWindy,
-        "full_result": full_out,
-        "block_results": list(results),
     }
 
     print(f"finished morphological process, wrote final mosaic -> {fileMorphOut}")
