@@ -513,6 +513,10 @@ def dist_th_window_worker(args, iR, iC, Iwin, lcwin, sigma2, ENL, binW):
     """
     Return: iR, iC, thProbOpt(nCats,), catOpt(nCats,), thI_low(float linear)
     """
+
+    if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 200 == 0):
+        print(f"[dist_th_window_worker] start ({iR+1},{iC+1})", flush=True)
+    
     # --- materialize window locally (worker side) ---
     if hasattr(Iwin, "compute"):
         Iw2d = Iwin.compute()
@@ -589,6 +593,9 @@ def dist_th_window_worker(args, iR, iC, Iwin, lcwin, sigma2, ENL, binW):
         tmpb = np.zeros((nCats,), bool)
         tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
         catOpt = tmpb
+
+    if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 200 == 0):
+        print(f"[dist_th_window_worker] done ({iR+1},{iC+1})", flush=True)
 
     return int(iR), int(iC), thProbOpt, catOpt, float(thI_low)
 

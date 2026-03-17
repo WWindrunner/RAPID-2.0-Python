@@ -1271,11 +1271,17 @@ def dist_th(args, ds):
 
     nR = int(args.nR)
     nC = int(args.nC)
+    print(f"[dist_th] grid: nR={nR}, nC={nC}, total_windows={nR*nC}", flush=True)
 
     # --- small per-run params from optimizeDist6 ---
     sigma2 = np.asarray(ds.sigma2, dtype=float).reshape(-1)
     ENL = np.asarray(ds.n_est, dtype=float).reshape(-1)
     binW = np.asarray(ds.binWidth, dtype=float).reshape(-1)
+    print(
+        f"[dist_th] class stats: nCats={sigma2.size}, "
+        f"sigma2.shape={sigma2.shape}, ENL.shape={ENL.shape}, binW.shape={binW.shape}",
+        flush=True
+    )
 
     tasks = []
     for iR in range(nR):
@@ -1301,6 +1307,8 @@ def dist_th(args, ds):
             )
 
     # compute all windows
+    print(f"[dist_th] finished packing tasks: {len(tasks)}", flush=True)
+    print("[dist_th] submitting dask.compute...", flush=True)
     results = dask.compute(*tasks)
 
     # class count (MATLAB nClasses = length(C); here nCats = len(sigma2))
@@ -1314,6 +1322,7 @@ def dist_th(args, ds):
 
     # results is a tuple of return-values (because you did dask.compute(*tasks))
     # each element: (iR, iC, thProbOpt(nCats,), catOpt(nCats,), thI_low)
+    print("[dist_th] start collecting results into matrices...", flush=True)
     for item in results:
         if item is None:
             continue

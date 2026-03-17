@@ -1364,7 +1364,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None):
                     thSize=thSize,
                     thCompactness=thCompactness,
                     morph_out_dir=dirMorph,
-                    transform=ref_transform,
+                    block_transform=ref_transform,
                     crs=ref_crs
                 )
             )
