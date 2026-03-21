@@ -1283,6 +1283,12 @@ def dist_th(args, ds):
         flush=True
     )
 
+    print("[dist_th] persisting arrays...", flush=True)
+    ds.img_lp = ds.img_lp.persist()
+    if hasattr(ds, "land_cover"):
+        ds.land_cover = ds.land_cover.persist()
+    print("[dist_th] persist done", flush=True)
+
     tasks = []
     for iR in range(nR):
         r0 = int(args.r0[iR])
@@ -1309,7 +1315,15 @@ def dist_th(args, ds):
     # compute all windows
     print(f"[dist_th] finished packing tasks: {len(tasks)}", flush=True)
     print("[dist_th] submitting dask.compute...", flush=True)
-    results = dask.compute(*tasks)
+    batch_size = 200
+    all_results = []
+    for s in range(0, len(tasks), batch_size):
+        e = min(s + batch_size, len(tasks))
+        print(f"[dist_th] computing batch {s}:{e}", flush=True)
+        batch_results = dask.compute(*tasks[s:e])
+        all_results.extend(batch_results)
+        print(f"[dist_th] batch {s}:{e} done", flush=True)
+    results = tuple(all_results)
 
     # class count (MATLAB nClasses = length(C); here nCats = len(sigma2))
     nCats = int(sigma2.size)
