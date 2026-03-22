@@ -1312,6 +1312,25 @@ def dist_th(args, ds):
                 )
             )
 
+    print(type(ds.img_lp), getattr(ds.img_lp, "shape", None))
+    print(type(ds.land_cover), getattr(ds.land_cover, "shape", None))
+    print(type(ds.water_occurrence), getattr(ds.water_occurrence, "shape", None))
+
+    print(type(ds.sigma2), np.shape(ds.sigma2))
+    print(type(ds.n_est), np.shape(ds.n_est))
+    print(type(ds.binWidth), np.shape(ds.binWidth))
+
+    print(args.nR, args.nC)
+    print(type(args.r0), np.shape(args.r0))
+    print(type(args.c0), np.shape(args.c0))
+    print(type(args.nRows), np.shape(args.nRows))
+    print(type(args.nCols), np.shape(args.nCols))
+
+    print(getattr(args, "refmeta", None) is not None)
+    print(args.filepath[0])
+    print(args.dirOut)
+    print(args.dirTempPol)
+
     # compute all windows
     print(f"[dist_th] finished packing tasks: {len(tasks)}", flush=True)
     print("[dist_th] submitting dask.compute...", flush=True)
