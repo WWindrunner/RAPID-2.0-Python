@@ -1187,22 +1187,63 @@ def optimizeDist6(args, ds):
 
     # 2) run init bimodality GMM per window
     if getattr(args, "fileSBAInitUnCat", None) and os.path.exists(args.fileSBAInitUnCat):
-        print("loading SBAInitUnCat cache ...")
+        print("loading SBAInitUnCat cache ...", flush=True)
         d = loadmat(args.fileSBAInitUnCat)
-        for k in ["r0Sel", "c0Sel", "nRowsSel", "nColsSel",
-                  "thOcc", "mu1", "Iu", "peakWater", "medianWater", "stdWater"]:
+
+        # restore arrays with explicit dtype / contiguous layout
+        for k in ["r0Sel", "c0Sel", "nRowsSel", "nColsSel"]:
             if k in d:
-                setattr(ds, k, np.asarray(d[k]).squeeze())
+                setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.int64))
+
+        for k in ["thOcc", "mu1", "Iu", "peakWater", "medianWater", "stdWater"]:
+            if k in d:
+                setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.float64))
+
+        # warm up the SBA bbox, mimicking the effect of run_init_bimodality_dask
+        try:
+            r0s = np.asarray(ds.r0Sel, dtype=np.int64).ravel()
+            c0s = np.asarray(ds.c0Sel, dtype=np.int64).ravel()
+            nrs = np.asarray(ds.nRowsSel, dtype=np.int64).ravel()
+            ncs = np.asarray(ds.nColsSel, dtype=np.int64).ravel()
+
+            if r0s.size > 0:
+                r_min = int(r0s.min())
+                c_min = int(c0s.min())
+                r_max = int((r0s + nrs).max())
+                c_max = int((c0s + ncs).max())
+
+                print(
+                    f"[optimizeDist6] warming SBA bbox from cache: "
+                    f"r=({r_min},{r_max}), c=({c_min},{c_max})",
+                    flush=True
+                )
+
+                _ = ds.img_lp[r_min:r_max, c_min:c_max].compute()
+                _ = ds.water_occurrence[r_min:r_max, c_min:c_max].compute()
+
+                print("[optimizeDist6] SBA cache warm-up done", flush=True)
+            else:
+                print("[optimizeDist6] SBA cache warm-up skipped: empty r0Sel/c0Sel", flush=True)
+
+        except Exception as e:
+            print(f"[optimizeDist6] SBA cache warm-up skipped due to error: {e}", flush=True)
+
     else:
         args, ds = run_init_bimodality_dask(args, ds)
 
     # 3) categorize by peakWater (kmeans) + remove tiny classes + save Cat
     if getattr(args, "fileSBAInitCat", None) and os.path.exists(args.fileSBAInitCat):
-        print("loading SBAInitCat cache ...")
+        print("loading SBAInitCat cache ...", flush=True)
         d = loadmat(args.fileSBAInitCat)
-        for k in ["thOcc", "r0Sel", "c0Sel", "nRowsSel", "nColsSel", "mu1", "Iu", "C", "idx"]:
+
+        for k in ["r0Sel", "c0Sel", "nRowsSel", "nColsSel", "idx"]:
             if k in d:
-                setattr(ds, k, np.asarray(d[k]).squeeze())
+                setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.int64))
+
+        for k in ["thOcc", "mu1", "Iu", "C"]:
+            if k in d:
+                setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.float64))
+
     else:
         args, ds = categorize_water_classes(args, ds)
 
@@ -1312,24 +1353,24 @@ def dist_th(args, ds):
                 )
             )
 
-    print(type(ds.img_lp), getattr(ds.img_lp, "shape", None))
-    print(type(ds.land_cover), getattr(ds.land_cover, "shape", None))
-    print(type(ds.water_occurrence), getattr(ds.water_occurrence, "shape", None))
-
-    print(type(ds.sigma2), np.shape(ds.sigma2))
-    print(type(ds.n_est), np.shape(ds.n_est))
-    print(type(ds.binWidth), np.shape(ds.binWidth))
-
-    print(args.nR, args.nC)
-    print(type(args.r0), np.shape(args.r0))
-    print(type(args.c0), np.shape(args.c0))
-    print(type(args.nRows), np.shape(args.nRows))
-    print(type(args.nCols), np.shape(args.nCols))
-
-    print(getattr(args, "refmeta", None) is not None)
-    print(args.filepath[0])
-    print(args.dirOut)
-    print(args.dirTempPol)
+    # print(type(ds.img_lp), getattr(ds.img_lp, "shape", None))
+    # print(type(ds.land_cover), getattr(ds.land_cover, "shape", None))
+    # print(type(ds.water_occurrence), getattr(ds.water_occurrence, "shape", None))
+    #
+    # print(type(ds.sigma2), np.shape(ds.sigma2))
+    # print(type(ds.n_est), np.shape(ds.n_est))
+    # print(type(ds.binWidth), np.shape(ds.binWidth))
+    #
+    # print(args.nR, args.nC)
+    # print(type(args.r0), np.shape(args.r0))
+    # print(type(args.c0), np.shape(args.c0))
+    # print(type(args.nRows), np.shape(args.nRows))
+    # print(type(args.nCols), np.shape(args.nCols))
+    #
+    # print(getattr(args, "refmeta", None) is not None)
+    # print(args.filepath[0])
+    # print(args.dirOut)
+    # print(args.dirTempPol)
 
     # compute all windows
     print(f"[dist_th] finished packing tasks: {len(tasks)}", flush=True)
