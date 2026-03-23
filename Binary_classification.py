@@ -1330,20 +1330,38 @@ def dist_th(args, ds):
         ds.land_cover = ds.land_cover.persist()
     print("[dist_th] persist done", flush=True)
 
-    tasks = []
-    for iR in range(nR):
-        r0 = int(args.r0[iR])
-        nr = int(args.nRows[iR])
+    nCats = int(sigma2.size)
 
-        for iC in range(nC):
+    # allocate outputs early so we can fill batch by batch
+    matThProb = np.zeros((nR, nC, nCats), dtype=np.float32)
+    matCat = np.zeros((nR, nC, nCats), dtype=bool)
+    matThI_low = np.zeros((nR, nC), dtype=np.float32)
+    matStatus = np.zeros((nR, nC), dtype=bool)
+
+    batch_size = 200
+    total = nR * nC
+
+    packed = 0
+    for s in range(0, total, batch_size):
+        e = min(s + batch_size, total)
+        print(f"[dist_th] building batch {s}:{e}", flush=True)
+
+        tasks = []
+        # linear index -> (iR, iC)
+        for k in range(s, e):
+            iR = k // nC
+            iC = k % nC
+
+            r0 = int(args.r0[iR])
+            nr = int(args.nRows[iR])
             c0 = int(args.c0[iC])
             nc = int(args.nCols[iC])
 
-            # IMPORTANT: pass dask array slices directly (NO .compute here)
-            Iwin = ds.img_lp[r0:r0 + nr, c0:c0 + nc]
-
+            # IMPORTANT:
+            # materialize each window to numpy BEFORE wrapping in delayed
+            Iwin = ds.img_lp[r0:r0 + nr, c0:c0 + nc].compute()
             if hasattr(ds, "land_cover"):
-                lcwin = ds.land_cover[r0:r0 + nr, c0:c0 + nc]
+                lcwin = ds.land_cover[r0:r0 + nr, c0:c0 + nc].compute()
             else:
                 lcwin = None
 
@@ -1353,86 +1371,49 @@ def dist_th(args, ds):
                 )
             )
 
-    # print(type(ds.img_lp), getattr(ds.img_lp, "shape", None))
-    # print(type(ds.land_cover), getattr(ds.land_cover, "shape", None))
-    # print(type(ds.water_occurrence), getattr(ds.water_occurrence, "shape", None))
-    #
-    # print(type(ds.sigma2), np.shape(ds.sigma2))
-    # print(type(ds.n_est), np.shape(ds.n_est))
-    # print(type(ds.binWidth), np.shape(ds.binWidth))
-    #
-    # print(args.nR, args.nC)
-    # print(type(args.r0), np.shape(args.r0))
-    # print(type(args.c0), np.shape(args.c0))
-    # print(type(args.nRows), np.shape(args.nRows))
-    # print(type(args.nCols), np.shape(args.nCols))
-    #
-    # print(getattr(args, "refmeta", None) is not None)
-    # print(args.filepath[0])
-    # print(args.dirOut)
-    # print(args.dirTempPol)
-
-    # compute all windows
-    print(f"[dist_th] finished packing tasks: {len(tasks)}", flush=True)
-    print("[dist_th] submitting dask.compute...", flush=True)
-    batch_size = 200
-    all_results = []
-    for s in range(0, len(tasks), batch_size):
-        e = min(s + batch_size, len(tasks))
-        print(f"[dist_th] computing batch {s}:{e}", flush=True)
-        batch_results = dask.compute(*tasks[s:e])
-        all_results.extend(batch_results)
+        print(f"[dist_th] submitting batch {s}:{e}", flush=True)
+        batch_results = dask.compute(*tasks)
         print(f"[dist_th] batch {s}:{e} done", flush=True)
-    results = tuple(all_results)
 
-    # class count (MATLAB nClasses = length(C); here nCats = len(sigma2))
-    nCats = int(sigma2.size)
+        # collect directly into output matrices
+        for item in batch_results:
+            if item is None:
+                continue
 
-    # allocate outputs (MATLAB: matThProb, matCat, matThI(:,:,end) for low class)
-    matThProb = np.zeros((nR, nC, nCats), dtype=np.float32)
-    matCat = np.zeros((nR, nC, nCats), dtype=bool)
-    matThI_low = np.zeros((nR, nC), dtype=np.float32)
-    matStatus = np.zeros((nR, nC), dtype=bool)
+            iR, iC, thProbOpt, catOpt, thI_low = item
+            iR = int(iR)
+            iC = int(iC)
 
-    # results is a tuple of return-values (because you did dask.compute(*tasks))
-    # each element: (iR, iC, thProbOpt(nCats,), catOpt(nCats,), thI_low)
-    print("[dist_th] start collecting results into matrices...", flush=True)
-    for item in results:
-        if item is None:
-            continue
+            thProbOpt = np.asarray(thProbOpt, dtype=np.float32).reshape(-1)
+            catOpt = np.asarray(catOpt, dtype=bool).reshape(-1)
 
-        iR, iC, thProbOpt, catOpt, thI_low = item
-        iR = int(iR)
-        iC = int(iC)
+            if thProbOpt.size != nCats:
+                tmp = np.zeros((nCats,), dtype=np.float32)
+                tmp[: min(nCats, thProbOpt.size)] = thProbOpt[: min(nCats, thProbOpt.size)]
+                thProbOpt = tmp
 
-        thProbOpt = np.asarray(thProbOpt, dtype=np.float32).reshape(-1)
-        catOpt = np.asarray(catOpt, dtype=bool).reshape(-1)
+            if catOpt.size != nCats:
+                tmpb = np.zeros((nCats,), dtype=bool)
+                tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
+                catOpt = tmpb
 
-        # safety: tolerate worker returning different length
-        if thProbOpt.size != nCats:
-            tmp = np.zeros((nCats,), dtype=np.float32)
-            tmp[: min(nCats, thProbOpt.size)] = thProbOpt[: min(nCats, thProbOpt.size)]
-            thProbOpt = tmp
-        if catOpt.size != nCats:
-            tmpb = np.zeros((nCats,), dtype=bool)
-            tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
-            catOpt = tmpb
+            matThProb[iR, iC, :] = thProbOpt
+            matCat[iR, iC, :] = catOpt
+            matThI_low[iR, iC] = np.float32(thI_low)
+            matStatus[iR, iC] = True
 
-        matThProb[iR, iC, :] = thProbOpt
-        matCat[iR, iC, :] = catOpt
-        matThI_low[iR, iC] = np.float32(thI_low)
-        matStatus[iR, iC] = True
-
-    # stash into ds for later steps (interpolation / threshold map construction / segmentation)
     ds.matThProb = matThProb
     ds.matCat = matCat
     ds.matThI_low = matThI_low
     ds.matStatus = matStatus
 
-    print("[dist_th] window-wise thresholding done.")
+    print("[dist_th] window-wise thresholding done.", flush=True)
+    print("[dist_th] entering dist_th_postprocess...", flush=True)
 
     args, ds = dist_th_postprocess(args, ds)
-    print("[dist_th] done")
+
+    print("[dist_th] dist_th_postprocess finished", flush=True)
+    print("[dist_th] done", flush=True)
 
     return args, ds
 
