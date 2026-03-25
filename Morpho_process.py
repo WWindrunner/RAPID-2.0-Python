@@ -1235,7 +1235,9 @@ def morph_block_worker(
     }
 
 
-def morph_proc_scene_main(scene_pack, blockSize=None):
+def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
+    import gc
+
     pol_results = scene_pack["pol_results"]
 
     if "VV" not in pol_results or "VH" not in pol_results:
@@ -1254,6 +1256,10 @@ def morph_proc_scene_main(scene_pack, blockSize=None):
 
     if blockSize is None:
         blockSize = int(getattr(args_vv, "morphPreBlockSize", 1000))
+
+    if batch_size is None:
+        batch_size = int(getattr(args_vv, "morphBatchSize", 8))
+    batch_size = max(1, int(batch_size))
 
     dirMorph = getattr(args_vv, "dirMorph", os.path.join(args_vv.dirOut, "Morph"))
     os.makedirs(dirMorph, exist_ok=True)
@@ -1305,11 +1311,57 @@ def morph_proc_scene_main(scene_pack, blockSize=None):
         keep_size=False,
     )
 
-    tasks = []
+    # ---- batch submit instead of collecting all tasks ----
+    pending_tasks = []
+    block_files = []
+    total_blocks = int(nR) * int(nC)
+    queued_blocks = 0
+    finished_blocks = 0
+    batch_id = 0
+
     print("Morphologic processing:")
+    print(
+        f"[morph_proc_scene_main] total blocks = {total_blocks}, "
+        f"blockSize = {blockSize}, batch_size = {batch_size}",
+        flush=True
+    )
+
+    def _flush_batch(pending_tasks, batch_id, finished_blocks):
+        if not pending_tasks:
+            return [], finished_blocks
+
+        print(
+            f"[morph_proc_scene_main] submitting batch {batch_id} "
+            f"with {len(pending_tasks)} block(s)",
+            flush=True
+        )
+
+        batch_results = dask.compute(*pending_tasks)
+
+        for r in batch_results:
+            block_files.append(r["file"])
+
+        finished_blocks += len(batch_results)
+
+        print(
+            f"[morph_proc_scene_main] finished batch {batch_id}; "
+            f"completed {finished_blocks}/{total_blocks} blocks",
+            flush=True
+        )
+
+        del batch_results
+        gc.collect()
+
+        return [], finished_blocks
+
     for iR in range(int(nR)):
         for iC in range(int(nC)):
-            print(f"[morph_proc_scene_main] queue block ({iR+1},{iC+1})/({nR},{nC})", flush=True)
+            queued_blocks += 1
+            print(
+                f"[morph_proc_scene_main] queue block ({iR+1},{iC+1})/({nR},{nC}) "
+                f"[{queued_blocks}/{total_blocks}]",
+                flush=True
+            )
 
             r0Load = int(r0[iR, 0])
             nRowsLoad = int(nRows[iR, 0])
@@ -1329,7 +1381,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None):
             LCC_block = ds_vv.land_cover[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
             water_occ_block = ds_vv.water_occurrence[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
 
-            tasks.append(
+            pending_tasks.append(
                 morph_block_worker(
                     iR=iR,
                     iC=iC,
@@ -1369,43 +1421,58 @@ def morph_proc_scene_main(scene_pack, blockSize=None):
                 )
             )
 
-    print("[morph_proc_scene_main] submitting morph tasks...", flush=True)
-    results = dask.compute(*tasks)
+            if len(pending_tasks) >= batch_size:
+                batch_id += 1
+                pending_tasks, finished_blocks = _flush_batch(
+                    pending_tasks,
+                    batch_id,
+                    finished_blocks
+                )
+
+    # flush tail batch
+    if pending_tasks:
+        batch_id += 1
+        pending_tasks, finished_blocks = _flush_batch(
+            pending_tasks,
+            batch_id,
+            finished_blocks
+        )
+
     print("[morph_proc_scene_main] all morph blocks finished", flush=True)
 
     # ---- mosaic ----
     print("[morph_proc_scene_main] start mosaic", flush=True)
 
-    block_files = [r["file"] for r in results]
     src_files = [rasterio.open(f) for f in block_files]
     try:
         mosaic, out_trans = rasterio.merge.merge(src_files)
 
         with rasterio.open(
-                fileMorphOut,
-                "w",
-                driver="GTiff",
-                height=mosaic.shape[1],
-                width=mosaic.shape[2],
-                count=1,
-                dtype=mosaic.dtype,
-                crs=src_files[0].crs,
-                transform=out_trans,
-                nodata=255,
-                compress="deflate",
-                tiled=True,
+            fileMorphOut,
+            "w",
+            driver="GTiff",
+            height=mosaic.shape[1],
+            width=mosaic.shape[2],
+            count=1,
+            dtype=mosaic.dtype,
+            crs=src_files[0].crs,
+            transform=out_trans,
+            nodata=255,
+            compress="deflate",
+            tiled=True,
         ) as dst:
             dst.write(mosaic)
     finally:
         for src in src_files:
             src.close()
+
     print("[morph_proc_scene_main] mosaic finished", flush=True)
 
     print("[morph_proc_scene_main] deleting block files", flush=True)
     for f in block_files:
         try:
             os.remove(f)
-        except:
+        except Exception:
             pass
     print("[morph_proc_scene_main] cleanup finished", flush=True)
 
