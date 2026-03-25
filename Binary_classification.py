@@ -1185,8 +1185,15 @@ def optimizeDist6(args, ds):
     # 1) filter windows by modeOcc + count rules
     args, ds = filter_windows_by_modeOcc(args, ds)
 
+    use_sba_cache = bool(getattr(args, "useSBACache", False))
+    print(f"[optimizeDist6] useSBACache={use_sba_cache}", flush=True)
+
     # 2) run init bimodality GMM per window
-    if getattr(args, "fileSBAInitUnCat", None) and os.path.exists(args.fileSBAInitUnCat):
+    if (
+        use_sba_cache
+        and getattr(args, "fileSBAInitUnCat", None)
+        and os.path.exists(args.fileSBAInitUnCat)
+    ):
         print("loading SBAInitUnCat cache ...", flush=True)
         d = loadmat(args.fileSBAInitUnCat)
 
@@ -1199,7 +1206,7 @@ def optimizeDist6(args, ds):
             if k in d:
                 setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.float64))
 
-        # warm up the SBA bbox, mimicking the effect of run_init_bimodality_dask
+        # optional warm-up
         try:
             r0s = np.asarray(ds.r0Sel, dtype=np.int64).ravel()
             c0s = np.asarray(ds.c0Sel, dtype=np.int64).ravel()
@@ -1229,10 +1236,16 @@ def optimizeDist6(args, ds):
             print(f"[optimizeDist6] SBA cache warm-up skipped due to error: {e}", flush=True)
 
     else:
+        if use_sba_cache:
+            print("[optimizeDist6] SBAInitUnCat cache not found, recomputing ...", flush=True)
         args, ds = run_init_bimodality_dask(args, ds)
 
     # 3) categorize by peakWater (kmeans) + remove tiny classes + save Cat
-    if getattr(args, "fileSBAInitCat", None) and os.path.exists(args.fileSBAInitCat):
+    if (
+        use_sba_cache
+        and getattr(args, "fileSBAInitCat", None)
+        and os.path.exists(args.fileSBAInitCat)
+    ):
         print("loading SBAInitCat cache ...", flush=True)
         d = loadmat(args.fileSBAInitCat)
 
@@ -1245,6 +1258,8 @@ def optimizeDist6(args, ds):
                 setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.float64))
 
     else:
+        if use_sba_cache:
+            print("[optimizeDist6] SBAInitCat cache not found, recategorizing ...", flush=True)
         args, ds = categorize_water_classes(args, ds)
 
     # 4) per-category sample map + init dist fitting + category screening

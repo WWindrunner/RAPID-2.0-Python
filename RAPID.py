@@ -51,7 +51,7 @@ def normalize_args(args):
     bool_fields = [
         "Iter", "showDist", "writeSampleMap", "showProg", "showProgress",
         "imported", "optIterAlg", "bInitialized", "bExport",
-        "floodimage", "failed", "writeSampleDist",
+        "floodimage", "failed", "writeSampleDist", "useSBACache",
     ]
     for name in bool_fields:
         if hasattr(args, name):
@@ -223,6 +223,8 @@ def parse(config_json=None):
                         help='Remove categories if R2 < thR2. Default 0.8.')
     parser.add_argument('--writeSampleDist', type=_str2bool, default=True,
                         help='Write chi-square vs empirical distribution figures for each category. Default True.')
+    parser.add_argument('--useSBACache', type=_str2bool, default=False,
+                        help='Whether to load SBA cached intermediate results (default: False).')
 
     # -----------------------------
     # dist_th / worker thresholds
