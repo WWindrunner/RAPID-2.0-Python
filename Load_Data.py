@@ -226,8 +226,20 @@ def Load_Data(args):
         else:
             setattr(ds, 'water_occurrence', readfileio(wotif, args.chunks))
             # args.tempfiles = None
-        ds.img_lp = da.where(ds.water_occurrence > 100, 0, ds.img_lp)
-        ds.img_cp = da.where(ds.water_occurrence > 100, 0, ds.img_cp)
+
+        # align chunks before combining arrays, to avoid repeated rechunk-merge graphs later
+        if hasattr(ds.water_occurrence, "rechunk"):
+            ds.water_occurrence = ds.water_occurrence.rechunk(ds.img_lp.chunks)
+
+        if hasattr(ds.img_cp, "rechunk") and ds.img_cp.chunks != ds.img_lp.chunks:
+            ds.img_cp = ds.img_cp.rechunk(ds.img_lp.chunks)
+
+        mask_wo = ds.water_occurrence > 100
+        zero_lp = da.zeros_like(ds.img_lp)
+        zero_cp = da.zeros_like(ds.img_cp)
+
+        ds.img_lp = da.where(mask_wo, zero_lp, ds.img_lp)
+        ds.img_cp = da.where(mask_wo, zero_cp, ds.img_cp)
 
         # land cover file
         if LCCtif == None:
@@ -253,5 +265,8 @@ def Load_Data(args):
             args.tempfiles.append(tempfileOM)
 
     del ds.inc
-    print(ds.img_lp)
+
+    print("img_lp chunks:", getattr(ds.img_lp, "chunks", None))
+    print("img_cp chunks:", getattr(ds.img_cp, "chunks", None))
+    print("water_occurrence chunks:", getattr(ds.water_occurrence, "chunks", None))
     return args, ds

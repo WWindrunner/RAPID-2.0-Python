@@ -849,8 +849,9 @@ def createSampleMapSBA(
             hh = int(nRows[w]); ww = int(nCols[w])
 
             # slice from dask arrays -> numpy
-            I = ds.img_lp[rr:rr+hh, cc:cc+ww].compute()
-            water_prob = ds.water_occurrence[rr:rr+hh, cc:cc+ww].compute()
+            I_view = ds.img_lp[rr:rr + hh, cc:cc + ww]
+            water_view = ds.water_occurrence[rr:rr + hh, cc:cc + ww]
+            I, water_prob = dask.compute(I_view, water_view)
 
             # MATLAB condition: water_prob > thProb(w) & I>0 & I_dB < Iu(w)
             I = np.asarray(I, dtype=np.float64)
@@ -1081,7 +1082,7 @@ def generate_initial_sample_maps(
         fileSampleMap = f"{fileSampleMap_root}{i}.tif"
         fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.png")
 
-        # 1) sample map + pol_water（线性域）
+        # 1) sample map + pol_water
         pol_water = createSampleMapSBA(
             fileSampleMap=fileSampleMap,
             ds=ds,
@@ -1093,16 +1094,14 @@ def generate_initial_sample_maps(
             ref_raster_path=args.filepath[0],
         )
 
-        pol_water_by_cat[i - 1] = pol_water  # 你后面可能还要用
+        pol_water_by_cat[i - 1] = pol_water
 
-        # 如果不想保留 sample map 文件，这里先记着，循环后统一删也行
-        #（我这里选择：后面“无效类”一定删；有效类按 save_sample_map 决定是否删）
-        # 2) dB域统计
+        # 2) dB
         pol_water_dB = 10.0 * np.log10(pol_water)
         muGau1 = float(np.mean(pol_water_dB))
         sigmaGau1 = float(np.std(pol_water_dB, ddof=1))  # MATLAB std 默认 ddof=1
 
-        # 3) 初始化分布（MATLAB 传 inf）
+        # 3) initialize distribution
         sigma2_i, n_est_i, mKLD_i, mNSE_i, mR2_i, thProb_i, binWidth_i = findInitDist(
             I=pol_water,
             muGaussian=muGau1,
@@ -1119,7 +1118,7 @@ def generate_initial_sample_maps(
         thProb[i - 1] = thProb_i
         binWidth[i - 1] = binWidth_i
 
-        # 4) 画图（可选）
+        # 4) save (optional)
         if save_sample_dist:
             KLD_chi2_frm_sample(
                 I=pol_water,
@@ -1131,10 +1130,6 @@ def generate_initial_sample_maps(
                 real2theo=False,
                 out_figure=fileSampleDist,
             )
-
-        # 5) 如果不保留 sample map，且当前类“暂时还未知是否有效”，可以先不删；
-        #    我们等后面统一按 maskInvalidCat 删。
-        #    但如果你确定永远不需要这些文件，也可以这里先删（不推荐）。
 
     # === remove categories with low statistics ===
     maskInvalidCat = (mKLD > thKLD) | (mNSE < thNSE) | (mR2 < thR2)

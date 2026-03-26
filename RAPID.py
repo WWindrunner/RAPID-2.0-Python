@@ -394,7 +394,7 @@ def setup_dask_from_slurm():
         if mem_mb > 0:
             mem_limit = f"{int(mem_mb * 0.85)}MB"
         else:
-            mem_limit = "70GB"
+            mem_limit = "90GB"
 
         cluster = LocalCluster(
             n_workers=n_workers,
