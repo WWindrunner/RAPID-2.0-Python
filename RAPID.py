@@ -666,8 +666,8 @@ def RAPID(*args, **kwargs):
     with Timer('Morph_proc_scene'):
         scene_output = [Morph_proc_scene(scene_pack) for scene_pack in scene_output]
 
-    out_filepath = quick_look_scene(scene_output)
-    return out_filepath
+    # out_filepath = quick_look_scene(scene_output)
+    # return out_filepath
 
 
 if __name__ == '__main__':

@@ -881,16 +881,29 @@ def morph_block_worker(
     block_transform,
     crs
 ):
-    """
-    Full port of morph_worker.m for one block,
-    except helper functions not yet provided are left as placeholders.
-    Writes one block tif: fileBlock
-    """
+    import os
+    import gc
+    import numpy as np
+    import rasterio
+
     print(f"[morph_block_worker] start ({iR + 1},{iC + 1})", flush=True)
+
+    # -----------------------------
+    # small local helper
+    # -----------------------------
+    def _read_th_window(root, cat_idx):
+        arr = _read_window_from_tif(
+            f"{root}{cat_idx}.tif",
+            r0Load, c0Load, nRowsLoad, nColsLoad
+        )
+        return np.asarray(arr, dtype=np.float32)
 
     # ---- read initial water masks ----
     rasWBCo = _read_window_from_tif(fileWB_vv, r0Load, c0Load, nRowsLoad, nColsLoad)
     rasWBCross = _read_window_from_tif(fileWB_vh, r0Load, c0Load, nRowsLoad, nColsLoad)
+
+    rasWBCo = np.asarray(rasWBCo, dtype=np.float32)
+    rasWBCross = np.asarray(rasWBCross, dtype=np.float32)
 
     # ---- load in-memory arrays ----
     Ipp = Ipp_block.compute() if hasattr(Ipp_block, "compute") else Ipp_block
@@ -898,13 +911,13 @@ def morph_block_worker(
     LCC = LCC_block.compute() if hasattr(LCC_block, "compute") else LCC_block
     water_occ = water_occ_block.compute() if hasattr(water_occ_block, "compute") else water_occ_block
 
-    Ipp = np.asarray(Ipp, dtype=np.float64)
-    Iqp = np.asarray(Iqp, dtype=np.float64)
+    Ipp = np.asarray(Ipp, dtype=np.float32)
+    Iqp = np.asarray(Iqp, dtype=np.float32)
     LCC = np.asarray(LCC)
-    water_occ = np.asarray(water_occ, dtype=np.float64)
+    water_occ = np.asarray(water_occ, dtype=np.float32)
 
     rows, cols = rasWBCo.shape
-    rasWB = np.zeros((rows, cols), dtype=np.float64)
+    rasWB = np.zeros((rows, cols), dtype=np.float32)
 
     # MATLAB:
     # Ipp(Ipp==0)=NaN;
@@ -912,16 +925,6 @@ def morph_block_worker(
     Ipp[Ipp == 0] = np.nan
     Ipp[Iqp == 0] = np.nan
     Iqp[Iqp == 0] = np.nan
-
-    # ---- threshold stacks ----
-    thpp = np.zeros((rows, cols, nCatPP + 1), dtype=np.float64)
-    thqp = np.zeros((rows, cols, nCatQP + 1), dtype=np.float64)
-
-    for c in range(1, nCatPP + 2):
-        thpp[:, :, c - 1] = _read_window_from_tif(f"{fileThFine_vv}{c}.tif", r0Load, c0Load, nRowsLoad, nColsLoad)
-
-    for c in range(1, nCatQP + 2):
-        thqp[:, :, c - 1] = _read_window_from_tif(f"{fileThFine_vh}{c}.tif", r0Load, c0Load, nRowsLoad, nColsLoad)
 
     # ---- masks ----
     maskOut = np.isnan(rasWBCo) | np.isnan(rasWBCross)
@@ -969,27 +972,54 @@ def morph_block_worker(
         maskOtherModCred = (rasWBCo == idx_vv[1]) & (rasWB == 0) & (~maskOut)
         rasWB[maskOtherModCred] = 4
     else:
-        maskOtherModCred = np.zeros_like(rasWB, dtype=bool)
+        maskOtherModCred = np.zeros((rows, cols), dtype=bool)
 
     rasWB[(rasWBCo > 0) & (rasWB == 0)] = 5
 
+    # =========================================================
+    # build only needed threshold maps, no full 3D stacks
+    # =========================================================
+
     # ---- merge thresholds for PW ----
-    thppM = np.zeros((rows, cols), dtype=np.float64)
-    for c in range(1, nCatPP + 2):
-        maskC = (rasWBCo == c)
-        thppC = thpp[:, :, c - 1]
-        sel = maskC & maskPWHighCred
-        thppM[sel] = thppC[sel]
+    thppM = np.zeros((rows, cols), dtype=np.float32)
+    cats_pp = np.unique(rasWBCo[maskPWHighCred])
+    cats_pp = cats_pp[np.isfinite(cats_pp)].astype(np.int32)
+    cats_pp = cats_pp[(cats_pp >= 1) & (cats_pp <= nCatPP + 1)]
 
-    thpp_high = np.maximum(thpp[:, :, idx_vv[0] - 1], thpp[:, :, -1])
-    thqp_high = np.maximum(thqp[:, :, idx_vh[0] - 1], thqp[:, :, -1])
+    for c in cats_pp:
+        sel = (rasWBCo == c) & maskPWHighCred
+        if np.any(sel):
+            thppC = _read_th_window(fileThFine_vv, int(c))
+            thppM[sel] = thppC[sel]
+            del thppC
 
-    thqpM = np.zeros((rows, cols), dtype=np.float64)
-    for c in range(1, nCatQP + 2):
-        maskC = (rasWBCross == c)
-        thqpC = thqp[:, :, c - 1]
-        sel = maskC & maskPWHighCred
-        thqpM[sel] = thqpC[sel]
+    thqpM = np.zeros((rows, cols), dtype=np.float32)
+    cats_qp = np.unique(rasWBCross[maskPWHighCred])
+    cats_qp = cats_qp[np.isfinite(cats_qp)].astype(np.int32)
+    cats_qp = cats_qp[(cats_qp >= 1) & (cats_qp <= nCatQP + 1)]
+
+    for c in cats_qp:
+        sel = (rasWBCross == c) & maskPWHighCred
+        if np.any(sel):
+            thqpC = _read_th_window(fileThFine_vh, int(c))
+            thqpM[sel] = thqpC[sel]
+            del thqpC
+
+    # ---- high-threshold layers ----
+    thpp_high_a = _read_th_window(fileThFine_vv, int(idx_vv[0]))
+    thpp_high_b = _read_th_window(fileThFine_vv, int(nCatPP + 1))
+    thpp_high = np.maximum(thpp_high_a, thpp_high_b).astype(np.float32, copy=False)
+    del thpp_high_a, thpp_high_b
+
+    thqp_high_a = _read_th_window(fileThFine_vh, int(idx_vh[0]))
+    thqp_high_b = _read_th_window(fileThFine_vh, int(nCatQP + 1))
+    thqp_high = np.maximum(thqp_high_a, thqp_high_b).astype(np.float32, copy=False)
+    del thqp_high_a, thqp_high_b
+
+    # ---- moderate-threshold layer ----
+    thpp_mod = None
+    if len(idx_vv) >= 2:
+        thpp_mod = _read_th_window(fileThFine_vv, int(idx_vv[1]))
 
     # =========================================================
     # form high to low-credibility water bodies
@@ -999,17 +1029,27 @@ def morph_block_worker(
     maskSeeds = (rasWB == 1)
     RSeeds, CSeeds = np.where(maskSeeds)
     if RSeeds.size > 0:
-        thPWppBlock, maskPatches, CM = extendTh(RSeeds, CSeeds, maskPW, None, thppM, 'prc90', None)
-        thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, maskPW, CM, thqpM, 'prc90', None)
+        thPWppBlock, maskPatches, CM_seed = extendTh(RSeeds, CSeeds, maskPW, None, thppM, 'prc90', None)
+        thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, maskPW, CM_seed, thqpM, 'prc90', None)
+
+        thPWppBlock = np.asarray(thPWppBlock, dtype=np.float32)
+        thPWqpBlock = np.asarray(thPWqpBlock, dtype=np.float32)
+        maskPatches = np.asarray(maskPatches, dtype=bool)
 
         accept = (Ipp < thPWppBlock) | (Iqp < thPWqpBlock)
-        rasWB[maskPatches] = 1 * accept[maskPatches]
+        rasWB[maskPatches] = accept[maskPatches].astype(np.float32)
+
+        del thPWppBlock, thPWqpBlock, maskPatches, CM_seed, accept
 
     mask_thHigh = (rasWB == 1) & ((rasWBCo == idx_vv[0]) | (rasWBCo == nCatPP + 1))
     if np.any(mask_thHigh):
-        thHigh = np.percentile(Ipp[mask_thHigh & np.isfinite(Ipp)], 75)
+        valid_high = mask_thHigh & np.isfinite(Ipp)
+        if np.any(valid_high):
+            thHigh = np.float32(np.percentile(Ipp[valid_high], 75))
+        else:
+            thHigh = np.float32(np.nan)
     else:
-        thHigh = np.nan
+        thHigh = np.float32(np.nan)
 
     # ---- form highly-credible water objects ----
     maskSeeds = (rasWB == 2)
@@ -1018,20 +1058,21 @@ def morph_block_worker(
         thPWppBlock, maskPatches, _ = extendTh(RSeeds, CSeeds, maskSeeds, None, thpp_high, 'prc90', None)
         thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, maskSeeds, None, thqp_high, 'prc90', None)
 
-        thPWppBlock = np.asarray(thPWppBlock, dtype=float)
+        thPWppBlock = np.asarray(thPWppBlock, dtype=np.float32)
+        thPWqpBlock = np.asarray(thPWqpBlock, dtype=np.float32)
         maskPatches = np.asarray(maskPatches, dtype=bool)
 
-        fill_val = thGlobal if np.isfinite(thGlobal) else 0.0
-        thPWppBlock[maskPatches] = (
-                thPWppBlock[maskPatches] * (thPWppBlock[maskPatches] > 0)
-                + fill_val * (thPWppBlock[maskPatches] <= 0)
-        )
+        fill_val = np.float32(thGlobal if np.isfinite(thGlobal) else 0.0)
+        loc = maskPatches
+        thPWppBlock[loc] = np.where(thPWppBlock[loc] > 0, thPWppBlock[loc], fill_val)
 
         if isWindy:
             accept = (Ipp < thPWppBlock) | (Iqp < thPWqpBlock)
         else:
             accept = (Ipp < thPWppBlock)
-        rasWB[maskPatches] = 2 * accept[maskPatches]
+        rasWB[maskPatches] = 2 * accept[maskPatches].astype(np.float32)
+
+        del thPWppBlock, thPWqpBlock, maskPatches, accept
 
     # ---- form non-PW highly credible objects ----
     maskSeeds = (rasWB == 3)
@@ -1042,40 +1083,59 @@ def morph_block_worker(
             thMatOut, maskPatches, _ = extendTh(RSeeds, CSeeds, WBMax, None, thpp_high, 'prc90', None)
             thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, WBMax, None, thqp_high, 'prc90', None)
 
+            thMatOut = np.asarray(thMatOut, dtype=np.float32)
+            thPWqpBlock = np.asarray(thPWqpBlock, dtype=np.float32)
+            maskPatches = np.asarray(maskPatches, dtype=bool)
+
             cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
-            thMatOut = np.minimum(thMatOut, cap_val) if np.isfinite(cap_val) else thMatOut
+            if np.isfinite(cap_val):
+                thMatOut = np.minimum(thMatOut, np.float32(cap_val))
 
             accept = (Ipp < thMatOut) | (Iqp < thPWqpBlock)
-            rasWB[maskPatches] = 3 * accept[maskPatches]
+            rasWB[maskPatches] = 3 * accept[maskPatches].astype(np.float32)
+
+            del thMatOut, thPWqpBlock, maskPatches, accept
         else:
             WBMax = (rasWBCo > 0) & (rasWB > 2)
             thMatOut, maskPatches, _ = extendTh(RSeeds, CSeeds, WBMax, None, thpp_high, 'prc90', None)
 
+            thMatOut = np.asarray(thMatOut, dtype=np.float32)
+            maskPatches = np.asarray(maskPatches, dtype=bool)
+
             cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
-            thMatOut = np.minimum(thMatOut, cap_val) if np.isfinite(cap_val) else thMatOut
+            if np.isfinite(cap_val):
+                thMatOut = np.minimum(thMatOut, np.float32(cap_val))
 
             accept = (Ipp < thMatOut)
-            rasWB[maskPatches] = 3 * accept[maskPatches]
+            rasWB[maskPatches] = 3 * accept[maskPatches].astype(np.float32)
+
+            del thMatOut, maskPatches, accept
 
     # ---- moderate-credible objects ----
     maskSeeds = (rasWB == 4)
-    if np.any(maskSeeds):
+    if np.any(maskSeeds) and (thpp_mod is not None):
         RSeeds, CSeeds = np.where(maskSeeds)
         WBMax = (rasWBCo > 0) & (rasWB > 3)
-        thMatOut, maskPatches, _ = extendTh(RSeeds, CSeeds, WBMax, None, thpp[:, :, idx_vv[1] - 1], 'prc90', None)
+        thMatOut, maskPatches, _ = extendTh(RSeeds, CSeeds, WBMax, None, thpp_mod, 'prc90', None)
+
+        thMatOut = np.asarray(thMatOut, dtype=np.float32)
+        maskPatches = np.asarray(maskPatches, dtype=bool)
 
         cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
-        thMatOut = np.minimum(thMatOut, cap_val) if np.isfinite(cap_val) else thMatOut
+        if np.isfinite(cap_val):
+            thMatOut = np.minimum(thMatOut, np.float32(cap_val))
 
         accept = (Ipp < thMatOut)
-        rasWB[maskPatches] = 4 * accept[maskPatches]
+        rasWB[maskPatches] = 4 * accept[maskPatches].astype(np.float32)
+
+        del thMatOut, maskPatches, accept
 
     # ---- low-credible objects ----
     maskLow = (rasWB == 5)
     if np.any(maskLow):
         cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
         if np.isfinite(cap_val):
-            rasWB[maskLow] = 5 * (Ipp[maskLow] < cap_val)
+            rasWB[maskLow] = 5 * (Ipp[maskLow] < np.float32(cap_val)).astype(np.float32)
 
     # =========================================================
     # step 4) remove small objects / low compactness
@@ -1093,24 +1153,20 @@ def morph_block_worker(
         maskSeeds = (rasWB == credibility) & maskExt
         RSeeds, CSeeds = np.where(maskSeeds)
 
-        # MATLAB uses only 4 layers in CM even though nCred=5
         if credibility <= 4:
             CM[:, :, credibility - 1], _ = binary_regiongrow(maskExt, RSeeds, CSeeds, 'codedObject', 8, 0, True)
             CMc = CM[:, :, credibility - 1]
         else:
-            # keep last credibility using previous CM logic if needed
-            CMc = np.zeros_like(rasWB, dtype=np.int32)
+            CMc = np.zeros((rows, cols), dtype=np.int32)
 
         if credibility >= 3:
             if isWindy:
                 catVector = rasWBCo.copy()
                 temp_mask = ((rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1))) & (catVector == 0)
-                catVector[temp_mask] = 3  # temp number
+                catVector[temp_mask] = 3
             else:
                 catVector = rasWBCo
 
-            # placeholder logic: realCat depends on connected-component mode
-            # requires accumarray/mode equivalent inside a helper later if exact behavior matters
             patch_ids = np.unique(CMc[CMc > 0])
             realCred = []
 
@@ -1119,7 +1175,9 @@ def morph_block_worker(
                 vals = vals[np.isfinite(vals)]
                 if vals.size == 0:
                     continue
-                catInd = int(np.bincount(vals.astype(int)).argmax())
+
+                vals_i = vals.astype(np.int32, copy=False)
+                catInd = int(np.bincount(vals_i).argmax())
 
                 credInd = 0
                 if (catInd == idx_vv[0]) or (catInd == nCatPP + 1):
@@ -1139,15 +1197,20 @@ def morph_block_worker(
                     realCred.append((pid, credInd))
                     rasWB[CMc == pid] = credInd
 
-            lstRealCred[credibility - 1] = np.array(realCred, dtype=int) if len(realCred) > 0 else np.empty((0, 2), dtype=int)
-
+            lstRealCred[credibility - 1] = (
+                np.asarray(realCred, dtype=np.int32)
+                if len(realCred) > 0 else np.empty((0, 2), dtype=np.int32)
+            )
         else:
             rasWB[CMc > 0] = credibility
-            patch_ids = np.unique(CMc[CMc > 0])
-            lstRealCred[credibility - 1] = np.column_stack([
-                patch_ids,
-                np.full(patch_ids.shape, credibility, dtype=int)
-            ]) if patch_ids.size > 0 else np.empty((0, 2), dtype=int)
+            patch_ids = np.unique(CMc[CMc > 0]).astype(np.int32)
+            lstRealCred[credibility - 1] = (
+                np.column_stack([
+                    patch_ids,
+                    np.full(patch_ids.shape, credibility, dtype=np.int32)
+                ])
+                if patch_ids.size > 0 else np.empty((0, 2), dtype=np.int32)
+            )
 
     # remove objects with high built-up ratio
     mask2Remove = np.zeros((rows, cols), dtype=bool)
@@ -1169,20 +1232,20 @@ def morph_block_worker(
     for credibility in range(1, nCred + 1):
         if credibility > 4:
             continue
+
         CMc = CM[:, :, credibility - 1]
         realCred = lstRealCred[credibility - 1]
         if realCred is None or len(realCred) == 0:
             continue
 
-        # area{credibility} / compactScore{credibility} expected from compactness()
-        # exact structure depends on your later implementation
         try:
-            patchID, areaC = area[credibility - 1][:, 0].astype(int), area[credibility - 1][:, 1]
-            compactID, compactC = compactScore[credibility - 1][:, 0].astype(int), compactScore[credibility - 1][:, 1]
+            patchID = area[credibility - 1][:, 0].astype(np.int32)
+            areaC = area[credibility - 1][:, 1]
+            compactID = compactScore[credibility - 1][:, 0].astype(np.int32)
+            compactC = compactScore[credibility - 1][:, 1]
         except Exception:
             raise NotImplementedError("compactness() output structure is not yet defined.")
 
-        # map patch -> real credibility
         loc = np.searchsorted(realCred[:, 0], patchID)
         loc = np.clip(loc, 0, len(realCred) - 1)
         credC = realCred[loc, 1]
@@ -1192,7 +1255,6 @@ def morph_block_worker(
         maskSmall = np.isin(CMc, IDSmall)
 
         thCompC = np.asarray(thCompactness)[credC - 1]
-        # align compact ids
         IDVoid = compactID[compactC < thCompC]
         maskVoid = np.isin(CMc, IDVoid)
 
@@ -1200,7 +1262,7 @@ def morph_block_worker(
 
     rasWB[maskOut | (Ipp <= 0)] = np.nan
 
-    # ---- return only the PROCESS core (MATLAB writes rasWB(rs:re,cs:ce)) ----
+    # ---- return only the PROCESS core ----
     core = rasWB[rs:re + 1, cs:ce + 1]
 
     out = np.full(core.shape, 255, dtype=np.uint8)
@@ -1220,11 +1282,22 @@ def morph_block_worker(
             height=core.shape[0],
             width=core.shape[1],
             count=1,
-            dtype=core.dtype,
-            transform=block_transform,
-            crs=crs
+            dtype=out.dtype,
+            transform=sub_transform_from_ref(block_transform, r0Save, c0Save),
+            crs=crs,
+            nodata=255,
+            compress="deflate",
+            tiled=True
     ) as dst:
-        dst.write(core, 1)
+        dst.write(out, 1)
+
+    # try to release references early
+    del rasWBCo, rasWBCross, Ipp, Iqp, LCC, water_occ
+    del rasWB, thppM, thqpM, thpp_high, thqp_high
+    if thpp_mod is not None:
+        del thpp_mod
+    del CM, lstRealCred, core, out
+    gc.collect()
 
     print(f"[morph_block_worker] finished block ({iR + 1},{iC + 1})", flush=True)
 
