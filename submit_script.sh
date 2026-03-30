@@ -1,11 +1,11 @@
 #!/bin/bash
 
 #SBATCH --output=/tank/data/SFS/xinyis/shared/src/RAPID_python/RAPID_2.0_Python/logs/log-%j.out
-#SBATCH --partition=768g
+#SBATCH --partition=batch
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=20
-#SBATCH --mem=100G
+#SBATCH --cpus-per-task=30
+#SBATCH --mem=120G
 #SBATCH --job-name=rapid_python
 
 set -e

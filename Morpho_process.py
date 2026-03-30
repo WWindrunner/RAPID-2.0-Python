@@ -384,129 +384,114 @@ def _positive_stat(v, mode: str):
         raise ValueError(f"unknown thresholding option: {mode}")
 
 
-def _neighbor_offsets(nNeighbor=4, nWin=0):
+def _regiongrow_structure(nNeighbor: int, nWin: int):
     """
-    Match MATLAB neighbor definition.
+    Build connectivity structure for scipy.ndimage.label.
+    Returns a boolean footprint with odd shape.
     """
-    if nNeighbor == 8:
-        dr = np.array([-1, -1, -1,  0, 0, 1, 1, 1], dtype=int)
-        dc = np.array([-1,  0,  1, -1, 1,-1, 0, 1], dtype=int)
-    elif nNeighbor == 4:
-        dr = np.array([0, -1, 1, 0], dtype=int)
-        dc = np.array([-1, 0, 0, 1], dtype=int)
+    if nNeighbor == 4:
+        # cross connectivity
+        st = np.array([[0, 1, 0],
+                       [1, 1, 1],
+                       [0, 1, 0]], dtype=bool)
+    elif nNeighbor == 8:
+        # full 3x3
+        st = np.ones((3, 3), dtype=bool)
     elif nWin > 0:
-        expected = (nWin * 2 + 1) ** 2 - 1
-        if nNeighbor != expected:
-            nNeighbor = expected
-        rr = np.arange(-nWin, nWin + 1, dtype=int)
-        cc = rr.copy()
-        dc_grid, dr_grid = np.meshgrid(cc, rr)
-        dr = dr_grid.ravel()
-        dc = dc_grid.ravel()
-        center = (dr == 0) & (dc == 0)
-        dr = dr[~center]
-        dc = dc[~center]
+        # custom square window connectivity, center included
+        st = np.ones((2 * nWin + 1, 2 * nWin + 1), dtype=bool)
     else:
         raise ValueError(f"Unsupported neighbor setup: nNeighbor={nNeighbor}, nWin={nWin}")
-    return dr, dc
-
-
-def _single_object_regiongrow(I, rowSeed, colSeed, nNeighbor=4, nWin=0):
-    """
-    Python equivalent of MATLAB binary_regiongrow(..., 'singleObject', ...)
-    Returns boolean mask.
-    Assumes rowSeed/colSeed are 0-based.
-    """
-    I = np.asarray(I)
-    rows, cols = I.shape
-
-    # MATLAB logic: if ~islogical(I), I=logical(I)
-    # Also reject NaN / False / out-of-mask
-    valid_mask = np.isfinite(I) & (I != 0)
-
-    CM = np.zeros((rows, cols), dtype=bool)
-
-    rowSeed = np.asarray(rowSeed, dtype=int).reshape(-1)
-    colSeed = np.asarray(colSeed, dtype=int).reshape(-1)
-
-    # keep only valid seeds inside mask
-    inside = (rowSeed >= 0) & (rowSeed < rows) & (colSeed >= 0) & (colSeed < cols)
-    rowSeed = rowSeed[inside]
-    colSeed = colSeed[inside]
-
-    if rowSeed.size == 0:
-        return CM
-
-    seed_valid = valid_mask[rowSeed, colSeed]
-    rowSeed = rowSeed[seed_valid]
-    colSeed = colSeed[seed_valid]
-
-    if rowSeed.size == 0:
-        return CM
-
-    dr, dc = _neighbor_offsets(nNeighbor=nNeighbor, nWin=nWin)
-
-    q = deque()
-    for r, c in zip(rowSeed, colSeed):
-        if not CM[r, c]:
-            CM[r, c] = True
-            q.append((int(r), int(c)))
-
-    while q:
-        r0, c0 = q.popleft()
-        for drr, dcc in zip(dr, dc):
-            r = r0 + int(drr)
-            c = c0 + int(dcc)
-
-            if r < 0 or r >= rows or c < 0 or c >= cols:
-                continue
-            if CM[r, c]:
-                continue
-            if not valid_mask[r, c]:
-                continue
-
-            CM[r, c] = True
-            q.append((r, c))
-
-    return CM
+    return st
 
 
 def binary_regiongrow(I, rowSeed, colSeed, opt, nNeighbor, nWin, showProg, C0=None, mCID=None):
     """
-    Python port of MATLAB binary_regiongrow.m
+    Faster Python replacement of MATLAB binary_regiongrow.m.
+
+    Notes
+    -----
+    - Uses connected-component labeling instead of Python-level BFS.
+    - Keeps behavior close to MATLAB for the usages in morph/extendTh:
+        * singleObject: return one boolean mask covering components touched by seeds
+        * codedObject:  return integer label map for seeded connected components
+    - Seeds are 0-based in Python.
+    - If rowSeed/colSeed are empty, seeds default to all foreground pixels.
 
     Parameters
     ----------
     I : 2D array
-        Boolean-like image / mask.
+        Boolean-like mask. Positive finite values are treated as True.
     rowSeed, colSeed : array-like or scalar
-        Seed coordinates, 0-based in Python.
+        Seed coordinates, 0-based.
     opt : str
-        'singleObject' or e.g. 'codedObject'
+        'singleObject' or otherwise coded-object mode.
     nNeighbor : int
-        4, 8, or custom based on nWin.
+        4, 8, or custom neighborhood size when nWin > 0.
     nWin : int
-        Used when neighborhood is custom.
+        Custom neighborhood half-width when nNeighbor is custom.
     showProg : bool
-        Ignored in Python version.
-    C0 : optional 2D label map
-        Existing coded map.
-    mCID : optional int
-        Starting label after C0.
+        Ignored here.
+    C0 : 2D array, optional
+        Existing coded map. Nonzero labels are preserved/reapplied to their whole component.
+    mCID : int, optional
+        Starting label after C0 components are assigned.
 
     Returns
     -------
-    CM : 2D bool or 2D int
-    optionally c_next if coded mode (to mimic varargout={c})
+    singleObject:
+        CM : 2D bool
+    codedObject:
+        CM : 2D int32
+        c_next : int
     """
     I = np.asarray(I)
+    if I.ndim != 2:
+        raise ValueError(f"I must be 2D, got shape {I.shape}")
+
     rows, cols = I.shape
+
+    # MATLAB logic:
+    # I(I>0)=1; I(I<=0 | isnan(I))=0; I=logical(I);
+    mask = np.isfinite(I) & (I > 0)
 
     rowSeed = np.asarray(rowSeed, dtype=int).reshape(-1)
     colSeed = np.asarray(colSeed, dtype=int).reshape(-1)
 
+    # MATLAB: if isempty(rowSeed) || isempty(colSeed), [rowSeed,colSeed]=find(I);
+    if rowSeed.size == 0 or colSeed.size == 0:
+        rowSeed, colSeed = np.where(mask)
+
+    # clip to inside image
+    inside = (rowSeed >= 0) & (rowSeed < rows) & (colSeed >= 0) & (colSeed < cols)
+    rowSeed = rowSeed[inside]
+    colSeed = colSeed[inside]
+
+    # keep only seeds on foreground
+    if rowSeed.size > 0:
+        valid_seed = mask[rowSeed, colSeed]
+        rowSeed = rowSeed[valid_seed]
+        colSeed = colSeed[valid_seed]
+
+    structure = _regiongrow_structure(nNeighbor=nNeighbor, nWin=nWin)
+
+    # label the whole foreground mask once
+    labels, nlab = ndimage.label(mask, structure=structure)
+
     if str(opt).lower() == "singleobject":
-        CM = _single_object_regiongrow(I, rowSeed, colSeed, nNeighbor=nNeighbor, nWin=nWin)
+        CM = np.zeros((rows, cols), dtype=bool)
+        if rowSeed.size == 0 or nlab == 0:
+            return CM
+
+        seed_labels = labels[rowSeed, colSeed]
+        seed_labels = seed_labels[seed_labels > 0]
+        if seed_labels.size == 0:
+            return CM
+
+        # union of all connected components touched by seeds
+        keep = np.zeros(nlab + 1, dtype=bool)
+        keep[np.unique(seed_labels)] = True
+        CM = keep[labels]
         return CM
 
     # -------------------------------------------------
@@ -515,47 +500,58 @@ def binary_regiongrow(I, rowSeed, colSeed, opt, nNeighbor, nWin, showProg, C0=No
     CM = np.zeros((rows, cols), dtype=np.int32)
     c = 1
 
+    # Reapply existing labels from C0 to their full connected component(s)
     if C0 is not None:
         C0 = np.asarray(C0)
         if C0.shape != (rows, cols):
             raise ValueError(f"C0 shape mismatch: expected {(rows, cols)}, got {C0.shape}")
 
-        CM[:] = C0.astype(np.int32, copy=False)
+        existing_mask = C0 > 0
+        if np.any(existing_mask) and nlab > 0:
+            existing_rows, existing_cols = np.where(existing_mask)
+            existing_comp_labels = labels[existing_rows, existing_cols]
 
-        rowSeed0, colSeed0 = np.where(C0 > 0)
-        if rowSeed0.size > 0:
-            # remove seed-groups already represented in C0
-            rowSeed0 = rowSeed0.astype(int)
-            colSeed0 = colSeed0.astype(int)
+            # unique foreground components that are represented in C0
+            comp_ids = np.unique(existing_comp_labels[existing_comp_labels > 0])
 
-            while rowSeed0.size > 0:
-                iCM = _single_object_regiongrow(I, rowSeed0[0], colSeed0[0], nNeighbor=nNeighbor, nWin=nWin)
-                CM[iCM] = int(C0[rowSeed0[0], colSeed0[0]])
+            for comp_id in comp_ids:
+                # pick one representative pixel from this component in C0
+                loc = np.flatnonzero(existing_comp_labels == comp_id)
+                rr = existing_rows[loc[0]]
+                cc = existing_cols[loc[0]]
+                old_label = int(C0[rr, cc])
 
-                # remove seeds covered by this region from rowSeed0/colSeed0
-                keep0 = ~iCM[rowSeed0, colSeed0]
-                rowSeed0 = rowSeed0[keep0]
-                colSeed0 = colSeed0[keep0]
+                CM[labels == comp_id] = old_label
 
-                # also remove covered seeds from rowSeed/colSeed
-                if rowSeed.size > 0:
-                    keep = ~iCM[rowSeed, colSeed]
-                    rowSeed = rowSeed[keep]
-                    colSeed = colSeed[keep]
+            # remove seeds already covered by C0-represented components
+            if rowSeed.size > 0:
+                seed_comp = labels[rowSeed, colSeed]
+                covered = (seed_comp > 0) & (CM[rowSeed, colSeed] > 0)
+                rowSeed = rowSeed[~covered]
+                colSeed = colSeed[~covered]
 
             if mCID is not None:
                 c = int(mCID)
 
-    totalSeeds = rowSeed.size
+    if rowSeed.size == 0 or nlab == 0:
+        return CM, c
 
-    while rowSeed.size > 0:
-        iCM = _single_object_regiongrow(I, rowSeed[0], colSeed[0], nNeighbor=nNeighbor, nWin=nWin)
-        CM[iCM] = int(c)
+    seed_labels = labels[rowSeed, colSeed]
+    seed_labels = seed_labels[seed_labels > 0]
+
+    if seed_labels.size == 0:
+        return CM, c
+
+    # assign one new object ID per unique seeded connected component
+    unique_seed_labels = np.unique(seed_labels)
+
+    # skip components already assigned via C0
+    for comp_id in unique_seed_labels:
+        comp_mask = (labels == comp_id)
+        if np.any(CM[comp_mask] > 0):
+            continue
+        CM[comp_mask] = c
         c += 1
-
-        keep = ~iCM[rowSeed, colSeed]
-        rowSeed = rowSeed[keep]
-        colSeed = colSeed[keep]
 
     return CM, c
 
@@ -1045,7 +1041,7 @@ def morph_block_worker(
     if np.any(mask_thHigh):
         valid_high = mask_thHigh & np.isfinite(Ipp)
         if np.any(valid_high):
-            thHigh = np.float32(np.percentile(Ipp[valid_high], 75))
+            thHigh = np.float32(np.percentile(Ipp[valid_high], 95))
         else:
             thHigh = np.float32(np.nan)
     else:
