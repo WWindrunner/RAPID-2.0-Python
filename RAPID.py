@@ -666,8 +666,16 @@ def RAPID(*args, **kwargs):
     with Timer('Morph_proc_scene'):
         scene_output = [Morph_proc_scene(scene_pack) for scene_pack in scene_output]
 
-    # out_filepath = quick_look_scene(scene_output)
-    # return out_filepath
+    if client is not None:
+        try:
+            cluster = client.cluster
+        except Exception:
+            cluster = None
+
+        client.close()
+
+        if cluster is not None:
+            cluster.close()
 
 
 if __name__ == '__main__':
