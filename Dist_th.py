@@ -811,10 +811,9 @@ def dist_th_postprocess(args, ds, nodata=255):
     # collect pol_water like MATLAB cell array (index by class id 1..nClasses)
     pol_water_lists = [[] for _ in range(nClasses + 1)]
 
-    # block over full image like MATLAB GetBlock(fileInt,1000,0,false,false)
     nR2, nC2, r0b, c0b, nRowsb, nColsb, _, _ = get_block(
         rowsImage, colsImage,
-        block_size=1000,
+        block_size=100,
         overlap=0,
         offset=False,
         keep_size=False,
