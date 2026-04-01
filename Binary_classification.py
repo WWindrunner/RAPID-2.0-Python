@@ -1429,10 +1429,14 @@ def dist_th(args, ds):
 
 
 def Binary_classification(args, ds):
-    # try:
     with Timer('BC TIME ' + args.filepath[0]):
         rowsImage, colsImage = ds.img_lp.shape
+
+        # -------------------------------------------------
+        # Part 1) SBA windows for optimizeDist6
+        # -------------------------------------------------
         args.blockSizeSBA = max(int(round(rowsImage / 50)), int(round(colsImage / 50)))
+
         nR, nC, r0, c0, nRows, nCols, rowsImage, colsImage = get_block(
             rowsImage, colsImage,
             block_size=args.blockSizeSBA,
@@ -1441,11 +1445,49 @@ def Binary_classification(args, ds):
             keep_size=True
         )
 
-        args.nR, args.nC, args.r0, args.c0, args.nRows, args.nCols = nR, nC, r0, c0, nRows, nCols
+        args.nR, args.nC = nR, nC
+        args.r0, args.c0 = r0, c0
+        args.nRows, args.nCols = nRows, nCols
 
+        print(
+            f"[Binary_classification] optimizeDist6 grid: "
+            f"blockSizeSBA={args.blockSizeSBA}, "
+            f"overlap={int(round(args.blockSizeSBA * args.overlapRatio / 2))}, "
+            f"nR={args.nR}, nC={args.nC}",
+            flush=True
+        )
+
+        # optimizeDist6 uses SBA windows
         args, ds = optimizeDist6(args, ds)
-        # TESTING
-        #sys.exit()
+
+        # -------------------------------------------------
+        # Part 2) dist_th windows
+        # -------------------------------------------------
+        args.SBAWinSize = int(getattr(args, "SBAWinSize", 100))
+
+        dist_block_size = max(1, int(round(args.SBAWinSize / 2.0)))
+        dist_overlap = max(0, int(round(args.SBAWinSize / 4.0)))
+
+        nR, nC, r0, c0, nRows, nCols, _, _ = get_block(
+            rowsImage, colsImage,
+            block_size=dist_block_size,
+            overlap=dist_overlap,
+            offset=False,
+            keep_size=True
+        )
+
+        args.nR, args.nC = nR, nC
+        args.r0, args.c0 = r0, c0
+        args.nRows, args.nCols = nRows, nCols
+
+        print(
+            f"[Binary_classification] dist_th grid: "
+            f"SBAWinSize={args.SBAWinSize}, "
+            f"block_size={dist_block_size}, "
+            f"overlap={dist_overlap}, "
+            f"nR={args.nR}, nC={args.nC}",
+            flush=True
+        )
 
         args, ds = dist_th(args, ds)
 
@@ -1453,4 +1495,5 @@ def Binary_classification(args, ds):
             for itemp in args.tempfiles:
                 print('closing ' + itemp.name)
                 itemp.close()
+
     return args, ds

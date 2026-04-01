@@ -813,7 +813,7 @@ def dist_th_postprocess(args, ds, nodata=255):
 
     nR2, nC2, r0b, c0b, nRowsb, nColsb, _, _ = get_block(
         rowsImage, colsImage,
-        block_size=100,
+        block_size=1000,
         overlap=0,
         offset=False,
         keep_size=False,
