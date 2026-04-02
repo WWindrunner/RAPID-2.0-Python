@@ -21,7 +21,7 @@ from scipy.io import savemat, loadmat
 from Initial_sample import *
 from rasterio.windows import Window
 from Dist_th import dist_th_window_worker, dist_th_postprocess
-from Statistics import KLD_chi2_frm_sample, validate_gmm, get_block
+from Statistics import KLD_chi2_frm_sample, validate_gmm, get_block, build_Iu_and_meanTransact
 
 
 def _first_col(x):
@@ -1303,9 +1303,11 @@ def _block_col(x, which: int):
 @tim
 def dist_th(args, ds):
     """
-    Python replacement of MATLAB dist_th (first ~200 lines):
-      - dispatch SBA windows
-      - collect per-window thProbOpt/catOpt/thI_low into matrices
+    Optimized Python replacement of MATLAB dist_th:
+      - normalize block outputs to process windows
+      - precompute thProbs / Iu / meanTransact once
+      - read row stripes from dask arrays once per stripe
+      - slice windows from local numpy stripe instead of per-window .compute()
 
     Outputs stored into ds:
       ds.matThProb: (nR, nC, nCats)
@@ -1322,70 +1324,135 @@ def dist_th(args, ds):
 
     nR = int(args.nR)
     nC = int(args.nC)
-    print(f"[dist_th] grid: nR={nR}, nC={nC}, total_windows={nR*nC}", flush=True)
+    total = nR * nC
 
-    # --- small per-run params from optimizeDist6 ---
+    print(f"[dist_th] grid: nR={nR}, nC={nC}, total_windows={total}", flush=True)
+
+    # --- class stats from optimizeDist6 ---
     sigma2 = np.asarray(ds.sigma2, dtype=float).reshape(-1)
     ENL = np.asarray(ds.n_est, dtype=float).reshape(-1)
     binW = np.asarray(ds.binWidth, dtype=float).reshape(-1)
+    nCats = int(sigma2.size)
+
     print(
-        f"[dist_th] class stats: nCats={sigma2.size}, "
+        f"[dist_th] class stats: nCats={nCats}, "
         f"sigma2.shape={sigma2.shape}, ENL.shape={ENL.shape}, binW.shape={binW.shape}",
         flush=True
     )
 
+    # --- precompute thProbs / Iu / meanTransact once ---
+    thProbs = np.arange(0.60, 0.9900001, 0.02, dtype=float)
+    Iu_global, meanTransact_global, _ = build_Iu_and_meanTransact(thProbs, ENL, sigma2)
+
+    print(
+        f"[dist_th] precomputed threshold tables: "
+        f"thProbs.shape={thProbs.shape}, "
+        f"Iu.shape={np.asarray(Iu_global).shape}, "
+        f"meanTransact.shape={np.asarray(meanTransact_global).shape}",
+        flush=True
+    )
+
+    # --- persist source arrays once ---
     print("[dist_th] persisting arrays...", flush=True)
     ds.img_lp = ds.img_lp.persist()
     if hasattr(ds, "land_cover"):
         ds.land_cover = ds.land_cover.persist()
     print("[dist_th] persist done", flush=True)
 
-    nCats = int(sigma2.size)
-
-    # allocate outputs early so we can fill batch by batch
+    # --- allocate outputs ---
     matThProb = np.zeros((nR, nC, nCats), dtype=np.float32)
     matCat = np.zeros((nR, nC, nCats), dtype=bool)
     matThI_low = np.zeros((nR, nC), dtype=np.float32)
     matStatus = np.zeros((nR, nC), dtype=bool)
 
-    batch_size = 200
-    total = nR * nC
+    # --- batching ---
+    batch_size = int(getattr(args, "distThBatchSize", 500))
+    row_batch_size = max(1, batch_size // max(1, nC))
 
-    packed = 0
-    for s in range(0, total, batch_size):
-        e = min(s + batch_size, total)
-        print(f"[dist_th] building batch {s}:{e}", flush=True)
+    print(
+        f"[dist_th] batch_size={batch_size}, "
+        f"row_batch_size={row_batch_size}",
+        flush=True
+    )
 
-        tasks = []
-        # linear index -> (iR, iC)
-        for k in range(s, e):
-            iR = k // nC
-            iC = k % nC
+    c0_all = np.asarray(args.c0, dtype=np.int64).reshape(-1)
+    nCols_all = np.asarray(args.nCols, dtype=np.int64).reshape(-1)
+    c_min_global = int(c0_all.min())
+    c_max_global = int((c0_all + nCols_all).max())
 
-            r0 = int(args.r0[iR])
-            nr = int(args.nRows[iR])
-            c0 = int(args.c0[iC])
-            nc = int(args.nCols[iC])
+    processed = 0
 
-            # IMPORTANT:
-            # materialize each window to numpy BEFORE wrapping in delayed
-            Iwin = ds.img_lp[r0:r0 + nr, c0:c0 + nc].compute()
-            if hasattr(ds, "land_cover"):
-                lcwin = ds.land_cover[r0:r0 + nr, c0:c0 + nc].compute()
-            else:
-                lcwin = None
+    for r_start in range(0, nR, row_batch_size):
+        r_end = min(r_start + row_batch_size, nR)
 
-            tasks.append(
-                dask.delayed(dist_th_window_worker)(
-                    args, iR, iC, Iwin, lcwin, sigma2, ENL, binW
-                )
+        r0_batch = np.asarray(args.r0[r_start:r_end], dtype=np.int64).reshape(-1)
+        nRows_batch = np.asarray(args.nRows[r_start:r_end], dtype=np.int64).reshape(-1)
+
+        r_min = int(r0_batch.min())
+        r_max = int((r0_batch + nRows_batch).max())
+
+        print(
+            f"[dist_th] building row-batch rows {r_start}:{r_end} "
+            f"(windows {(r_end-r_start)*nC}) "
+            f"bbox=r[{r_min}:{r_max}], c[{c_min_global}:{c_max_global}]",
+            flush=True
+        )
+
+        # --- one compute per stripe ---
+        if hasattr(ds, "land_cover"):
+            Istripe, LCstripe = dask.compute(
+                ds.img_lp[r_min:r_max, c_min_global:c_max_global],
+                ds.land_cover[r_min:r_max, c_min_global:c_max_global],
             )
+        else:
+            Istripe = ds.img_lp[r_min:r_max, c_min_global:c_max_global].compute()
+            LCstripe = None
 
-        print(f"[dist_th] submitting batch {s}:{e}", flush=True)
+        Istripe = np.asarray(Istripe, dtype=np.float64)
+        if LCstripe is not None:
+            LCstripe = np.asarray(LCstripe)
+
+        # --- build tasks from local numpy stripe ---
+        tasks = []
+
+        for iR in range(r_start, r_end):
+            rr0 = int(args.r0[iR])
+            rrn = int(args.nRows[iR])
+
+            rr0_rel = rr0 - r_min
+            row_I = Istripe[rr0_rel:rr0_rel + rrn, :]
+            row_LC = LCstripe[rr0_rel:rr0_rel + rrn, :] if LCstripe is not None else None
+
+            for iC in range(nC):
+                cc0 = int(args.c0[iC])
+                ccn = int(args.nCols[iC])
+
+                cc0_rel = cc0 - c_min_global
+
+                Iwin = row_I[:, cc0_rel:cc0_rel + ccn]
+                lcwin = row_LC[:, cc0_rel:cc0_rel + ccn] if row_LC is not None else None
+
+                tasks.append(
+                    dask.delayed(dist_th_window_worker)(
+                        args,
+                        iR,
+                        iC,
+                        Iwin,
+                        lcwin,
+                        sigma2,
+                        ENL,
+                        binW,
+                        thProbs,
+                        Iu_global,
+                        meanTransact_global,
+                    )
+                )
+
+        print(f"[dist_th] submitting row-batch rows {r_start}:{r_end}", flush=True)
         batch_results = dask.compute(*tasks)
-        print(f"[dist_th] batch {s}:{e} done", flush=True)
+        print(f"[dist_th] row-batch rows {r_start}:{r_end} done", flush=True)
 
-        # collect directly into output matrices
+        # --- collect results ---
         for item in batch_results:
             if item is None:
                 continue
@@ -1411,6 +1478,13 @@ def dist_th(args, ds):
             matCat[iR, iC, :] = catOpt
             matThI_low[iR, iC] = np.float32(thI_low)
             matStatus[iR, iC] = True
+
+        processed += (r_end - r_start) * nC
+        print(
+            f"[dist_th] progress: {processed}/{total} windows "
+            f"({processed / total * 100:.1f}%)",
+            flush=True
+        )
 
     ds.matThProb = matThProb
     ds.matCat = matCat

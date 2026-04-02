@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import dask
-from Statistics import KLD_chi2_frm_sample, validate_gmm, get_block, build_Iu_and_meanTransact
+from Statistics import KLD_chi2_frm_sample, validate_gmm, get_block
 from utils import read_window_from_ds
 from scipy.stats import chi2
 import rasterio
@@ -509,27 +509,41 @@ def findThProb(
     return found, thProb_out, catSel_out, float(thI)
 
 
-def dist_th_window_worker(args, iR, iC, Iwin, lcwin, sigma2, ENL, binW):
+def dist_th_window_worker(
+    args,
+    iR,
+    iC,
+    Iwin,
+    lcwin,
+    sigma2,
+    ENL,
+    binW,
+    thProbs,
+    Iu_global,
+    meanTransact_global,
+):
     """
-    Return: iR, iC, thProbOpt(nCats,), catOpt(nCats,), thI_low(float linear)
+    Optimized version:
+      - Iwin / lcwin are already numpy arrays
+      - thProbs / Iu_global / meanTransact_global are precomputed once outside
+
+    Return:
+      iR, iC, thProbOpt(nCats,), catOpt(nCats,), thI_low(float linear)
     """
 
-    if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 200 == 0):
-        print(f"[dist_th_window_worker] start ({iR+1},{iC+1})", flush=True)
-    
-    # --- materialize window locally (worker side) ---
-    if hasattr(Iwin, "compute"):
-        Iw2d = Iwin.compute()
-    else:
-        Iw2d = Iwin
-    Iw2d = np.asarray(Iw2d, dtype=np.float64)
+    # sparse logging only
+    if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 2000 == 0):
+        print(f"[dist_th_window_worker_fast] start ({iR+1},{iC+1})", flush=True)
+
+    Iw2d = np.asarray(Iwin, dtype=np.float64)
 
     basinMask = np.isfinite(Iw2d)
     Iw = Iw2d[basinMask]
-    Iw = Iw[np.isfinite(Iw) & (Iw > 0)]  # MATLAB basinMask=~isnan(I1); later water-only uses >0
+    Iw = Iw[np.isfinite(Iw) & (Iw > 0)]
 
-    # if too few pixels, early return
     nCats = int(np.asarray(sigma2).size)
+
+    # early exit
     if Iw.size < max(50, int(getattr(args, "thMinSampleSize", 500) // 10)):
         return int(iR), int(iC), np.zeros((nCats,), float), np.zeros((nCats,), bool), 0.0
 
@@ -537,38 +551,29 @@ def dist_th_window_worker(args, iR, iC, Iwin, lcwin, sigma2, ENL, binW):
     rPW = 0.0
     isPW = False
     hasPW = False
-    if lcwin is not None:
-        if hasattr(lcwin, "compute"):
-            LCC2d = lcwin.compute()
-        else:
-            LCC2d = lcwin
-        LCC2d = np.asarray(LCC2d)
 
+    if lcwin is not None:
+        LCC2d = np.asarray(lcwin)
         LCCw = LCC2d[basinMask]
-        # MATLAB: rPW=sum(ismember(LCCw,codePW))/length(LCCw)
+
         codePW = int(getattr(args, "codePW", 80))
         if LCCw.size > 0:
             rPW = float(np.sum(LCCw == codePW) / LCCw.size)
 
-        # MATLAB: isPW=rPW>rThPW(2); hasPW=rPW>rThPW(1)
         rThPW = getattr(args, "distThRPW", (0.01, 0.9))
         hasPW = rPW > float(rThPW[0])
         isPW = rPW > float(rThPW[1])
 
-    # --- thProbs / Iu / meanTransact (match MATLAB constants) ---
-    thProbs = np.arange(0.60, 0.9900001, 0.02, dtype=float)
-    Iu, meanTransact, _ = build_Iu_and_meanTransact(thProbs, ENL, sigma2)
-
-    # --- findThProb ---
+    # --- findThProb using precomputed inputs ---
     found, thProbOpt, catOpt, thI_low = findThProb(
         runStyle=getattr(args, "runStyle", "wind_inclusive"),
         thProbs=thProbs,
-        Iu=Iu,
-        I1=Iw,                 # 1D samples in window
+        Iu=Iu_global,
+        I1=Iw,
         sigma2=sigma2,
         ENL=ENL,
         binWidth=binW,
-        meanTransact=meanTransact,
+        meanTransact=meanTransact_global,
         thKLD=getattr(args, "distThKLD", (0.1, 0.2)),
         thR=getattr(args, "distThR", (0.9, 0.7)),
         thNSE=getattr(args, "distThNSE", (0.80, 0.40)),
@@ -581,7 +586,6 @@ def dist_th_window_worker(args, iR, iC, Iwin, lcwin, sigma2, ENL, binW):
         thRH=getattr(args, "distThRH", (1.0, 1.0)),
     )
 
-    # even if not found, we still return arrays (MATLAB stores zeros)
     thProbOpt = np.asarray(thProbOpt, dtype=float).reshape(-1)
     catOpt = np.asarray(catOpt, dtype=bool).reshape(-1)
 
@@ -589,13 +593,14 @@ def dist_th_window_worker(args, iR, iC, Iwin, lcwin, sigma2, ENL, binW):
         tmp = np.zeros((nCats,), float)
         tmp[: min(nCats, thProbOpt.size)] = thProbOpt[: min(nCats, thProbOpt.size)]
         thProbOpt = tmp
+
     if catOpt.size != nCats:
         tmpb = np.zeros((nCats,), bool)
         tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
         catOpt = tmpb
 
-    if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 200 == 0):
-        print(f"[dist_th_window_worker] done ({iR+1},{iC+1})", flush=True)
+    if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 2000 == 0):
+        print(f"[dist_th_window_worker_fast] done ({iR+1},{iC+1})", flush=True)
 
     return int(iR), int(iC), thProbOpt, catOpt, float(thI_low)
 
