@@ -1098,8 +1098,8 @@ def morph_block_worker(
     maskSeeds = (rasWB == 2)
     RSeeds, CSeeds = np.where(maskSeeds)
     if RSeeds.size > 0:
-        thPWppBlock, maskPatches, _ = extendTh(RSeeds, CSeeds, maskSeeds, None, thpp_high, 'prc90', None)
-        thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, maskSeeds, None, thqp_high, 'prc90', None)
+        thPWppBlock, maskPatches, CM_seed = extendTh(RSeeds, CSeeds, maskSeeds, None, thpp_high, 'prc90', None)
+        thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, maskSeeds, CM_seed, thqp_high, 'prc90', None)
 
         thPWppBlock = np.asarray(thPWppBlock, dtype=np.float32)
         thPWqpBlock = np.asarray(thPWqpBlock, dtype=np.float32)
@@ -1115,7 +1115,7 @@ def morph_block_worker(
             accept = (Ipp < thPWppBlock)
         rasWB[maskPatches] = 2 * accept[maskPatches].astype(np.float32)
 
-        del thPWppBlock, thPWqpBlock, maskPatches, accept
+        del thPWppBlock, thPWqpBlock, CM_seed, maskPatches, accept
 
     # ---- form non-PW highly credible objects ----
     maskSeeds = (rasWB == 3)
@@ -1123,8 +1123,8 @@ def morph_block_worker(
     if RSeeds.size > 0:
         if isWindy:
             WBMax = ((rasWBCo > 0) | (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1))) & (rasWB > 2)
-            thMatOut, maskPatches, _ = extendTh(RSeeds, CSeeds, WBMax, None, thpp_high, 'prc90', None)
-            thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, WBMax, None, thqp_high, 'prc90', None)
+            thMatOut, maskPatches, CM_seed = extendTh(RSeeds, CSeeds, WBMax, None, thpp_high, 'prc90', None)
+            thPWqpBlock, _, _ = extendTh(RSeeds, CSeeds, WBMax, CM_seed, thqp_high, 'prc90', None)
 
             thMatOut = np.asarray(thMatOut, dtype=np.float32)
             thPWqpBlock = np.asarray(thPWqpBlock, dtype=np.float32)
@@ -1137,7 +1137,7 @@ def morph_block_worker(
             accept = (Ipp < thMatOut) | (Iqp < thPWqpBlock)
             rasWB[maskPatches] = 3 * accept[maskPatches].astype(np.float32)
 
-            del thMatOut, thPWqpBlock, maskPatches, accept
+            del thMatOut, thPWqpBlock, maskPatches, CM_seed, accept
         else:
             WBMax = (rasWBCo > 0) & (rasWB > 2)
             thMatOut, maskPatches, _ = extendTh(RSeeds, CSeeds, WBMax, None, thpp_high, 'prc90', None)
