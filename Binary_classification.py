@@ -1366,7 +1366,7 @@ def dist_th(args, ds):
     matStatus = np.zeros((nR, nC), dtype=bool)
 
     # --- choose coarse batch size ---
-    batch_size = int(getattr(args, "distThBatchSize", 1000))
+    batch_size = int(getattr(args, "distThBatchSize", 700))
     row_batch_size = max(1, batch_size // max(1, nC))
 
     print(
