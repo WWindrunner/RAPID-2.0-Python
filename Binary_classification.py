@@ -1303,12 +1303,11 @@ def _block_col(x, which: int):
 @tim
 def dist_th(args, ds):
     """
-    Coarse-grained optimized dist_th:
+    Optimized Python replacement of MATLAB dist_th:
       - normalize block outputs to process windows
       - precompute thProbs / Iu / meanTransact once
       - read row stripes from dask arrays once per stripe
-      - one delayed task handles multiple rows
-      - windows inside a stripe are processed serially inside the worker
+      - slice windows from local numpy stripe instead of per-window .compute()
 
     Outputs stored into ds:
       ds.matThProb: (nR, nC, nCats)
@@ -1329,6 +1328,7 @@ def dist_th(args, ds):
 
     print(f"[dist_th] grid: nR={nR}, nC={nC}, total_windows={total}", flush=True)
 
+    # --- class stats from optimizeDist6 ---
     sigma2 = np.asarray(ds.sigma2, dtype=float).reshape(-1)
     ENL = np.asarray(ds.n_est, dtype=float).reshape(-1)
     binW = np.asarray(ds.binWidth, dtype=float).reshape(-1)
@@ -1340,7 +1340,7 @@ def dist_th(args, ds):
         flush=True
     )
 
-    # --- precompute once ---
+    # --- precompute thProbs / Iu / meanTransact once ---
     thProbs = np.arange(0.60, 0.9900001, 0.02, dtype=float)
     Iu_global, meanTransact_global, _ = build_Iu_and_meanTransact(thProbs, ENL, sigma2)
 
@@ -1352,7 +1352,7 @@ def dist_th(args, ds):
         flush=True
     )
 
-    # --- persist source arrays ---
+    # --- persist source arrays once ---
     print("[dist_th] persisting arrays...", flush=True)
     ds.img_lp = ds.img_lp.persist()
     if hasattr(ds, "land_cover"):
@@ -1360,17 +1360,19 @@ def dist_th(args, ds):
     print("[dist_th] persist done", flush=True)
 
     # --- allocate outputs ---
+
     matThProb = np.zeros((nR, nC, nCats), dtype=np.float32)
     matCat = np.zeros((nR, nC, nCats), dtype=bool)
     matThI_low = np.zeros((nR, nC), dtype=np.float32)
     matStatus = np.zeros((nR, nC), dtype=bool)
 
-    # --- choose coarse batch size ---
-    batch_size = int(getattr(args, "distThBatchSize", 700))
+    # --- batching ---
+    batch_size = int(getattr(args, "distThBatchSize", 600))
     row_batch_size = max(1, batch_size // max(1, nC))
 
     print(
-        f"[dist_th] batch_size={batch_size}, row_batch_size={row_batch_size}",
+        f"[dist_th] batch_size={batch_size}, "
+        f"row_batch_size={row_batch_size}",
         flush=True
     )
 
@@ -1379,10 +1381,8 @@ def dist_th(args, ds):
     c_min_global = int(c0_all.min())
     c_max_global = int((c0_all + nCols_all).max())
 
-    tasks = []
-    task_meta = []
+    processed = 0
 
-    # --- build one task per multi-row stripe ---
     for r_start in range(0, nR, row_batch_size):
         r_end = min(r_start + row_batch_size, nR)
 
@@ -1399,6 +1399,7 @@ def dist_th(args, ds):
             flush=True
         )
 
+        # --- one compute per stripe ---
         if hasattr(ds, "land_cover"):
             Istripe, LCstripe = dask.compute(
                 ds.img_lp[r_min:r_max, c_min_global:c_max_global],
@@ -1412,32 +1413,47 @@ def dist_th(args, ds):
         if LCstripe is not None:
             LCstripe = np.asarray(LCstripe)
 
-        tasks.append(
-            dask.delayed(dist_th_window_worker)(
-                args,
-                r_start,
-                r_end,
-                Istripe,
-                LCstripe,
-                r_min,
-                c_min_global,
-                sigma2,
-                ENL,
-                binW,
-                thProbs,
-                Iu_global,
-                meanTransact_global,
-            )
-        )
-        task_meta.append((r_start, r_end))
+        # --- build tasks from local numpy stripe ---
+        tasks = []
 
-    print(f"[dist_th] submitting {len(tasks)} coarse tasks...", flush=True)
-    all_results = dask.compute(*tasks)
-    print(f"[dist_th] coarse tasks done", flush=True)
+        for iR in range(r_start, r_end):
+            rr0 = int(args.r0[iR])
+            rrn = int(args.nRows[iR])
 
-    processed = 0
+            rr0_rel = rr0 - r_min
+            row_I = Istripe[rr0_rel:rr0_rel + rrn, :]
+            row_LC = LCstripe[rr0_rel:rr0_rel + rrn, :] if LCstripe is not None else None
 
-    for (r_start, r_end), batch_results in zip(task_meta, all_results):
+            for iC in range(nC):
+                cc0 = int(args.c0[iC])
+                ccn = int(args.nCols[iC])
+
+                cc0_rel = cc0 - c_min_global
+
+                Iwin = row_I[:, cc0_rel:cc0_rel + ccn]
+                lcwin = row_LC[:, cc0_rel:cc0_rel + ccn] if row_LC is not None else None
+
+                tasks.append(
+                    dask.delayed(dist_th_window_worker)(
+                        args,
+                        iR,
+                        iC,
+                        Iwin,
+                        lcwin,
+                        sigma2,
+                        ENL,
+                        binW,
+                        thProbs,
+                        Iu_global,
+                        meanTransact_global,
+                    )
+                )
+
+        print(f"[dist_th] submitting row-batch rows {r_start}:{r_end}", flush=True)
+        batch_results = dask.compute(*tasks)
+        print(f"[dist_th] row-batch rows {r_start}:{r_end} done", flush=True)
+
+        # --- collect results ---
         for item in batch_results:
             if item is None:
                 continue

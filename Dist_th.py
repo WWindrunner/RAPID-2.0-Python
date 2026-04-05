@@ -546,131 +546,99 @@ def findThProb(
 
 
 def dist_th_window_worker(
-        args,
-        r_start,
-        r_end,
-        Istripe,
-        LCstripe,
-        r_min,
-        c_min_global,
-        sigma2,
-        ENL,
-        binW,
-        thProbs,
-        Iu_global,
-        meanTransact_global,
+    args,
+    iR,
+    iC,
+    Iwin,
+    lcwin,
+    sigma2,
+    ENL,
+    binW,
+    thProbs,
+    Iu_global,
+    meanTransact_global,
 ):
     """
-    Coarse-grained worker:
-      - handles multiple iR rows in one task
-      - loops serially over all windows inside this stripe
-      - returns a list of tuples:
-          (iR, iC, thProbOpt, catOpt, thI_low)
+    Optimized version:
+      - Iwin / lcwin are already numpy arrays
+      - thProbs / Iu_global / meanTransact_global are precomputed once outside
+
+    Return:
+      iR, iC, thProbOpt(nCats,), catOpt(nCats,), thI_low(float linear)
     """
 
-    import time
-    t0 = time.perf_counter()
+    # sparse logging only
+    if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 2000 == 0):
+        print(f"[dist_th_window_worker_fast] start ({iR+1},{iC+1})", flush=True)
 
-    nC = int(args.nC)
+    Iw2d = np.asarray(Iwin, dtype=np.float64)
+
+    basinMask = np.isfinite(Iw2d)
+    Iw = Iw2d[basinMask]
+    Iw = Iw[np.isfinite(Iw) & (Iw > 0)]
+
     nCats = int(np.asarray(sigma2).size)
 
-    results = []
+    # early exit
+    if Iw.size < max(50, int(getattr(args, "thMinSampleSize", 500) // 10)):
+        return int(iR), int(iC), np.zeros((nCats,), float), np.zeros((nCats,), bool), 0.0
 
-    print(
-        f"[dist_th_worker] start rows {r_start}:{r_end} "
-        f"(windows {(r_end - r_start) * nC})",
-        flush=True
+    # --- LCC / PW ratio ---
+    rPW = 0.0
+    isPW = False
+    hasPW = False
+
+    if lcwin is not None:
+        LCC2d = np.asarray(lcwin)
+        LCCw = LCC2d[basinMask]
+
+        codePW = int(getattr(args, "codePW", 80))
+        if LCCw.size > 0:
+            rPW = float(np.sum(LCCw == codePW) / LCCw.size)
+
+        rThPW = getattr(args, "distThRPW", (0.01, 0.9))
+        hasPW = rPW > float(rThPW[0])
+        isPW = rPW > float(rThPW[1])
+
+    # --- findThProb using precomputed inputs ---
+    found, thProbOpt, catOpt, thI_low = findThProb(
+        runStyle=getattr(args, "runStyle", "wind_inclusive"),
+        thProbs=thProbs,
+        Iu=Iu_global,
+        I1=Iw,
+        sigma2=sigma2,
+        ENL=ENL,
+        binWidth=binW,
+        meanTransact=meanTransact_global,
+        thKLD=getattr(args, "distThKLD", (0.1, 0.2)),
+        thR=getattr(args, "distThR", (0.9, 0.7)),
+        thNSE=getattr(args, "distThNSE", (0.80, 0.40)),
+        thDist2Mean=float(getattr(args, "distThDist2Mean", 0.1)),
+        thSampleSize=int(getattr(args, "distThSampleSize", 50)),
+        isPW=bool(isPW),
+        hasPW=bool(hasPW),
+        thPC=getattr(args, "distThPC", (0.02, 0.98)),
+        thAD=float(getattr(args, "distThAD", 0.9)),
+        thRH=getattr(args, "distThRH", (1.0, 1.0)),
     )
 
-    for iR in range(r_start, r_end):
-        rr0 = int(args.r0[iR])
-        rrn = int(args.nRows[iR])
-        rr0_rel = rr0 - r_min
+    thProbOpt = np.asarray(thProbOpt, dtype=float).reshape(-1)
+    catOpt = np.asarray(catOpt, dtype=bool).reshape(-1)
 
-        row_I = Istripe[rr0_rel:rr0_rel + rrn, :]
-        row_LC = LCstripe[rr0_rel:rr0_rel + rrn, :] if LCstripe is not None else None
+    if thProbOpt.size != nCats:
+        tmp = np.zeros((nCats,), float)
+        tmp[: min(nCats, thProbOpt.size)] = thProbOpt[: min(nCats, thProbOpt.size)]
+        thProbOpt = tmp
 
-        for iC in range(nC):
-            cc0 = int(args.c0[iC])
-            ccn = int(args.nCols[iC])
-            cc0_rel = cc0 - c_min_global
+    if catOpt.size != nCats:
+        tmpb = np.zeros((nCats,), bool)
+        tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
+        catOpt = tmpb
 
-            Iwin = row_I[:, cc0_rel:cc0_rel + ccn]
-            lcwin = row_LC[:, cc0_rel:cc0_rel + ccn] if row_LC is not None else None
+    if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 2000 == 0):
+        print(f"[dist_th_window_worker_fast] done ({iR+1},{iC+1})", flush=True)
 
-            Iw2d = np.asarray(Iwin, dtype=np.float64)
-
-            basinMask = np.isfinite(Iw2d)
-            Iw = Iw2d[basinMask]
-            Iw = Iw[np.isfinite(Iw) & (Iw > 0)]
-
-            if Iw.size < max(50, int(getattr(args, "thMinSampleSize", 500) // 10)):
-                thProbOpt = np.zeros((nCats,), dtype=float)
-                catOpt = np.zeros((nCats,), dtype=bool)
-                thI_low = 0.0
-                results.append((int(iR), int(iC), thProbOpt, catOpt, float(thI_low)))
-                continue
-
-            rPW = 0.0
-            isPW = False
-            hasPW = False
-
-            if lcwin is not None:
-                LCC2d = np.asarray(lcwin)
-                LCCw = LCC2d[basinMask]
-
-                codePW = int(getattr(args, "codePW", 80))
-                if LCCw.size > 0:
-                    rPW = float(np.sum(LCCw == codePW) / LCCw.size)
-
-                rThPW = getattr(args, "distThRPW", (0.01, 0.9))
-                hasPW = rPW > float(rThPW[0])
-                isPW = rPW > float(rThPW[1])
-
-            found, thProbOpt, catOpt, thI_low = findThProb(
-                runStyle=getattr(args, "runStyle", "wind_inclusive"),
-                thProbs=thProbs,
-                Iu=Iu_global,
-                I1=Iw,
-                sigma2=sigma2,
-                ENL=ENL,
-                binWidth=binW,
-                meanTransact=meanTransact_global,
-                thKLD=getattr(args, "distThKLD", (0.1, 0.2)),
-                thR=getattr(args, "distThR", (0.9, 0.7)),
-                thNSE=getattr(args, "distThNSE", (0.80, 0.40)),
-                thDist2Mean=float(getattr(args, "distThDist2Mean", 0.1)),
-                thSampleSize=int(getattr(args, "distThSampleSize", 50)),
-                isPW=bool(isPW),
-                hasPW=bool(hasPW),
-                thPC=getattr(args, "distThPC", (0.02, 0.98)),
-                thAD=float(getattr(args, "distThAD", 0.9)),
-                thRH=getattr(args, "distThRH", (1.0, 1.0)),
-            )
-
-            thProbOpt = np.asarray(thProbOpt, dtype=float).reshape(-1)
-            catOpt = np.asarray(catOpt, dtype=bool).reshape(-1)
-
-            if thProbOpt.size != nCats:
-                tmp = np.zeros((nCats,), dtype=float)
-                tmp[: min(nCats, thProbOpt.size)] = thProbOpt[: min(nCats, thProbOpt.size)]
-                thProbOpt = tmp
-
-            if catOpt.size != nCats:
-                tmpb = np.zeros((nCats,), dtype=bool)
-                tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
-                catOpt = tmpb
-
-            results.append((int(iR), int(iC), thProbOpt, catOpt, float(thI_low)))
-
-    elapsed = time.perf_counter() - t0
-    print(
-        f"[dist_th_worker] done rows {r_start}:{r_end} "
-        f"(windows {(r_end - r_start) * nC}) elapsed={elapsed:.2f}s",
-        flush=True
-    )
-
-    return results
+    return int(iR), int(iC), thProbOpt, catOpt, float(thI_low)
 
 
 def _ensure_refmeta(args):
