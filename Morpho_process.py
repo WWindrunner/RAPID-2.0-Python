@@ -1374,7 +1374,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
         blockSize = int(getattr(args_vv, "morphPreBlockSize", 1000))
 
     if batch_size is None:
-        batch_size = int(getattr(args_vv, "morphBatchSize", 8))
+        batch_size = int(getattr(args_vv, "morphBatchSize", 100))
     batch_size = max(1, int(batch_size))
 
     dirMorph = getattr(args_vv, "dirMorph", os.path.join(args_vv.dirOut, "Morph"))

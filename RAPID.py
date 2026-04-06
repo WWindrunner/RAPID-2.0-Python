@@ -313,8 +313,8 @@ def parse(config_json=None):
     parser.add_argument('--rProb', type=float, default=0.5,
                         help='Minimum ratio of high-probability pixels to total area. Default 0.5.')
 
-    parser.add_argument('--blockSizeMorph', type=int, default=3000,
-                        help='Block size for morphology stage. Default 3000.')
+    parser.add_argument('--blockSizeMorph', type=int, default=1000,
+                        help='Block size for morphology stage. Default 1000.')
 
     # ---- current workflow / io ----
     parser.add_argument('--OUT_PATH', type=str, default='.')
@@ -385,16 +385,16 @@ def setup_dask_from_slurm():
         return None
 
     ncpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
-    mem_mb = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
+    mem_gb = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
     use_processes = os.environ.get("DASK_USE_PROCESSES", "0") == "1"
 
     if not use_processes:
         n_workers = 1
         threads_per_worker = ncpus
-        if mem_mb > 0:
-            mem_limit = f"{int(mem_mb * 0.85)}MB"
+        if mem_gb > 0:
+            mem_limit = f"{int(mem_gb * 0.9)}GB"
         else:
-            mem_limit = "90GB"
+            mem_limit = "100GB"
 
         cluster = LocalCluster(
             n_workers=n_workers,
