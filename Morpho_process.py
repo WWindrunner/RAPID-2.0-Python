@@ -958,6 +958,7 @@ def morph_block_worker(
     Iqp = np.asarray(Iqp, dtype=np.float32)
     LCC = np.asarray(LCC)
     water_occ = np.asarray(water_occ, dtype=np.float32)
+    valid_sar = np.isfinite(Ipp) & np.isfinite(Iqp) & ((Ipp > 0) | (Iqp > 0))
 
     rows, cols = rasWBCo.shape
     rasWB = np.zeros((rows, cols), dtype=np.float32)
@@ -970,7 +971,7 @@ def morph_block_worker(
     Iqp[Iqp == 0] = np.nan
 
     # ---- masks ----
-    maskOut = np.isnan(rasWBCo) | np.isnan(rasWBCross)
+    maskOut = (~valid_sar) | np.isnan(rasWBCo) | np.isnan(rasWBCross)
     rasWB[maskOut] = np.nan
 
     # step 1) generate seeds
@@ -1014,8 +1015,6 @@ def morph_block_worker(
     if len(idx_vv) >= 2:
         maskOtherModCred = (rasWBCo == idx_vv[1]) & (rasWB == 0) & (~maskOut)
         rasWB[maskOtherModCred] = 4
-    else:
-        maskOtherModCred = np.zeros((rows, cols), dtype=bool)
 
     rasWB[(rasWBCo > 0) & (rasWB == 0)] = 5
 
@@ -1184,7 +1183,7 @@ def morph_block_worker(
     # step 4) remove small objects / low compactness
     # =========================================================
     nCred = 5
-    CM = np.zeros((rows, cols, 4), dtype=np.int32)
+    CM = np.zeros((rows, cols, nCred), dtype=np.int32)
     lstRealCred = [None] * nCred
 
     for credibility in range(1, nCred + 1):
@@ -1196,11 +1195,10 @@ def morph_block_worker(
         maskSeeds = (rasWB == credibility) & maskExt
         RSeeds, CSeeds = np.where(maskSeeds)
 
-        if credibility <= 4:
-            CM[:, :, credibility - 1], _ = binary_regiongrow(maskExt, RSeeds, CSeeds, 'codedObject', 8, 0, False)
-            CMc = CM[:, :, credibility - 1]
-        else:
-            CMc = np.zeros((rows, cols), dtype=np.int32)
+        CM[:, :, credibility - 1], _ = binary_regiongrow(
+            maskExt, RSeeds, CSeeds, 'codedObject', 8, 0, False
+        )
+        CMc = CM[:, :, credibility - 1]
 
         if credibility >= 3:
             if isWindy:
@@ -1258,24 +1256,20 @@ def morph_block_worker(
     # remove objects with high built-up ratio
     mask2Remove = np.zeros((rows, cols), dtype=bool)
     for credibility in range(1, nCred + 1):
-        if credibility <= 4:
-            mask2Remove_i, _ = RoI(
-                CM[:, :, credibility - 1],
-                LCC,
-                nWBClasses,
-                rNWB[credibility - 1],
-                True,
-                'contain'
-            )
-            mask2Remove = mask2Remove | mask2Remove_i
+        mask2Remove_i, _ = RoI(
+            CM[:, :, credibility - 1],
+            LCC,
+            nWBClasses,
+            rNWB[credibility - 1],
+            True,
+            'contain'
+        )
+        mask2Remove = mask2Remove | mask2Remove_i
     rasWB[mask2Remove] = 0
 
     # remove small objects / low compactness
     compactScore, area = compactness(CM)
     for credibility in range(1, nCred + 1):
-        if credibility > 4:
-            continue
-
         CMc = CM[:, :, credibility - 1]
         realCred = lstRealCred[credibility - 1]
         if realCred is None or len(realCred) == 0:
@@ -1404,9 +1398,9 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
         thGlobal_db = np.nan
         thGlobal = np.nan
 
-    WBClasses = np.asarray(getattr(args_vv, "WBClasses", [5, 6, 50, 60]), dtype=int)
+    WBClasses = np.asarray(getattr(args_vv, "WBClasses", [80, 90, 95]), dtype=int)
     EXClasses = np.asarray(getattr(args_vv, "EXClasses", []), dtype=int)
-    nWBClasses = np.asarray(getattr(args_vv, "nWBClasses", [8, 80]), dtype=int)
+    nWBClasses = np.asarray(getattr(args_vv, "nWBClasses", [50]), dtype=int)
 
     rNWB = np.asarray(getattr(args_vv, "rNWB_morph", [0.3, 0.4, 0.4, 0.4, 0.4]), dtype=float)
     thSize = np.asarray(getattr(args_vv, "thSize_morph", [10, 10, 10, 10, 10]), dtype=float)
