@@ -1201,42 +1201,54 @@ def morph_block_worker(
         CMc = CM[:, :, credibility - 1]
 
         if credibility >= 3:
+            # -------------------------------------------------
+            # Build a FINAL-CATEGORY candidate map, not raw class IDs
+            # 3 = high-confidence flood / high class outside PW & water-occ
+            # 4 = lower-confidence
+            # 5 = lowest-confidence
+            #
+            # Rule for each connected patch:
+            #   take the BEST (smallest) positive category inside the patch
+            #   so 3 dominates 4/5, and 4 dominates 5.
+            # -------------------------------------------------
+            catVector = np.zeros((rows, cols), dtype=np.int8)
+
+            # high class in co-pol: idx_vv[0] and nCatPP+1 are equally important
+            high_mask = (rasWBCo == idx_vv[0]) | (rasWBCo == (nCatPP + 1))
+
+            # windy case: let VH high class also contribute as class 2
             if isWindy:
-                catVector = rasWBCo.copy()
-                temp_mask = ((rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1))) & (catVector == 0)
-                catVector[temp_mask] = 3
-            else:
-                catVector = rasWBCo
+                high_mask = high_mask | (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1))
+
+            catVector[high_mask] = 2
+
+            # moderate class from co-pol
+            if len(idx_vv) >= 2:
+                mod_mask = (rasWBCo == idx_vv[1]) & (catVector == 0)
+                catVector[mod_mask] = 4
+
+            # remaining detected co-pol classes become low-confidence
+            low_mask = (rasWBCo > 0) & (catVector == 0)
+            catVector[low_mask] = 5
+
+            # windy-only VH detections with no co-pol support:
+            # only HIGH VH is promoted to class 2 above;
+            # do not invent 4/5 from VH here unless you explicitly want that behavior.
 
             patch_ids = np.unique(CMc[CMc > 0])
             realCred = []
 
             for pid in patch_ids:
                 vals = catVector[CMc == pid]
-                vals = vals[np.isfinite(vals)]
+                vals = vals[vals > 0]  # only final-category candidates 3/4/5
                 if vals.size == 0:
                     continue
 
-                vals_i = vals.astype(np.int32, copy=False)
-                catInd = int(np.bincount(vals_i).argmax())
+                # BEST evidence inside the patch dominates
+                credInd = int(np.min(vals))
 
-                credInd = 0
-                if (catInd == idx_vv[0]) or (catInd == nCatPP + 1):
-                    credInd = 3
-                elif len(idx_vv) >= 2 and (catInd == idx_vv[1]):
-                    credInd = 4
-                else:
-                    low_match = False
-                    for ic in range(2, nCatPP):
-                        if catInd == idx_vv[ic]:
-                            low_match = True
-                            break
-                    if low_match:
-                        credInd = 5
-
-                if credInd > 0:
-                    realCred.append((pid, credInd))
-                    rasWB[CMc == pid] = credInd
+                realCred.append((pid, credInd))
+                rasWB[CMc == pid] = credInd
 
             lstRealCred[credibility - 1] = (
                 np.asarray(realCred, dtype=np.int32)
