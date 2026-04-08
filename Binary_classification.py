@@ -1392,12 +1392,12 @@ def dist_th(args, ds):
         r_min = int(r0_batch.min())
         r_max = int((r0_batch + nRows_batch).max())
 
-        print(
-            f"[dist_th] building row-batch rows {r_start}:{r_end} "
-            f"(windows {(r_end-r_start)*nC}) "
-            f"bbox=r[{r_min}:{r_max}], c[{c_min_global}:{c_max_global}]",
-            flush=True
-        )
+        # print(
+        #     f"[dist_th] building row-batch rows {r_start}:{r_end} "
+        #     f"(windows {(r_end-r_start)*nC}) "
+        #     f"bbox=r[{r_min}:{r_max}], c[{c_min_global}:{c_max_global}]",
+        #     flush=True
+        # )
 
         # --- one compute per stripe ---
         if hasattr(ds, "land_cover"):
@@ -1449,9 +1449,9 @@ def dist_th(args, ds):
                     )
                 )
 
-        print(f"[dist_th] submitting row-batch rows {r_start}:{r_end}", flush=True)
+        # print(f"[dist_th] submitting row-batch rows {r_start}:{r_end}", flush=True)
         batch_results = dask.compute(*tasks)
-        print(f"[dist_th] row-batch rows {r_start}:{r_end} done", flush=True)
+        # print(f"[dist_th] row-batch rows {r_start}:{r_end} done", flush=True)
 
         # --- collect results ---
         for item in batch_results:
@@ -1481,11 +1481,12 @@ def dist_th(args, ds):
             matStatus[iR, iC] = True
 
         processed += (r_end - r_start) * nC
-        print(
-            f"[dist_th] progress: {processed}/{total} windows "
-            f"({processed / total * 100:.1f}%)",
-            flush=True
-        )
+        if (processed % 5000 == 0) or (processed == total):
+            print(
+                f"[dist_th] progress: {processed}/{total} windows "
+                f"({processed / total * 100:.1f}%)",
+                flush=True
+            )
 
     ds.matThProb = matThProb
     ds.matCat = matCat

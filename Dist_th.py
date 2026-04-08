@@ -568,8 +568,8 @@ def dist_th_window_worker(
     """
 
     # sparse logging only
-    if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 2000 == 0):
-        print(f"[dist_th_window_worker_fast] start ({iR+1},{iC+1})", flush=True)
+    # if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 3000 == 0):
+    #     print(f"[dist_th_window_worker] start ({iR+1},{iC+1})", flush=True)
 
     Iw2d = np.asarray(Iwin, dtype=np.float64)
 
