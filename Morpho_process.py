@@ -19,7 +19,20 @@ from collections import deque
 
 def _read_window_from_tif(path: str, r0: int, c0: int, nRows: int, nCols: int):
     with rasterio.open(path) as src:
-        return src.read(1, window=Window(c0, r0, nCols, nRows))
+        win = Window(c0, r0, nCols, nRows)
+        data = src.read(1, window=win)
+        nodata = src.nodata
+
+        if not np.issubdtype(data.dtype, np.floating):
+            data = data.astype(np.float32)
+
+        if nodata is not None:
+            data[data == nodata] = np.nan
+
+        mask = src.read_masks(1, window=win)
+        data[mask == 0] = np.nan
+
+    return data
 
 
 def countPixels(rasWBCo, rasWBCross, isOcean, targets):
@@ -958,7 +971,7 @@ def morph_block_worker(
     Iqp = np.asarray(Iqp, dtype=np.float32)
     LCC = np.asarray(LCC)
     water_occ = np.asarray(water_occ, dtype=np.float32)
-    valid_sar = np.isfinite(Ipp) & np.isfinite(Iqp) & ((Ipp > 0) | (Iqp > 0))
+    valid_sar = np.isfinite(Ipp) & np.isfinite(Iqp)
 
     rows, cols = rasWBCo.shape
     rasWB = np.zeros((rows, cols), dtype=np.float32)
