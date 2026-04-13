@@ -254,7 +254,7 @@ def Load_Data(args):
             setattr(ds, 'land_cover', readfileio(wotif, args.chunks))
             # args.tempfiles = None
         # Convert ESA LCC to GP LCC
-        ds.land_cover = ESALCC2GPLCC(ds.land_cover)
+        # ds.land_cover = ESALCC2GPLCC(ds.land_cover)
 
         # ocean mask file
         if args.datamode == 'mem':
@@ -266,7 +266,7 @@ def Load_Data(args):
 
     del ds.inc
 
-    print("img_lp chunks:", getattr(ds.img_lp, "chunks", None))
-    print("img_cp chunks:", getattr(ds.img_cp, "chunks", None))
-    print("water_occurrence chunks:", getattr(ds.water_occurrence, "chunks", None))
+    # print("img_lp chunks:", getattr(ds.img_lp, "chunks", None))
+    # print("img_cp chunks:", getattr(ds.img_cp, "chunks", None))
+    # print("water_occurrence chunks:", getattr(ds.water_occurrence, "chunks", None))
     return args, ds
