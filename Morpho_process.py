@@ -942,7 +942,7 @@ def morph_block_worker(
     import numpy as np
     import rasterio
 
-    print(f"[morph_block_worker] start ({iR + 1},{iC + 1})", flush=True)
+    # print(f"[morph_block_worker] start ({iR + 1},{iC + 1})", flush=True)
 
     # -----------------------------
     # small local helper
@@ -1361,7 +1361,7 @@ def morph_block_worker(
     del CM, lstRealCred, core, out
     gc.collect()
 
-    print(f"[morph_block_worker] finished block ({iR + 1},{iC + 1})", flush=True)
+    # print(f"[morph_block_worker] finished block ({iR + 1},{iC + 1})", flush=True)
 
     return {
         "iR": iR,
@@ -1465,11 +1465,11 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
         if not pending_tasks:
             return [], finished_blocks
 
-        print(
-            f"[morph_proc_scene_main] submitting batch {batch_id} "
-            f"with {len(pending_tasks)} block(s)",
-            flush=True
-        )
+        # print(
+        #     f"[morph_proc_scene_main] submitting batch {batch_id} "
+        #     f"with {len(pending_tasks)} block(s)",
+        #     flush=True
+        # )
 
         batch_results = dask.compute(*pending_tasks)
 
@@ -1492,11 +1492,11 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     for iR in range(int(nR)):
         for iC in range(int(nC)):
             queued_blocks += 1
-            print(
-                f"[morph_proc_scene_main] queue block ({iR+1},{iC+1})/({nR},{nC}) "
-                f"[{queued_blocks}/{total_blocks}]",
-                flush=True
-            )
+            # print(
+            #     f"[morph_proc_scene_main] queue block ({iR+1},{iC+1})/({nR},{nC}) "
+            #     f"[{queued_blocks}/{total_blocks}]",
+            #     flush=True
+            # )
 
             r0Load = int(r0[iR, 0])
             nRowsLoad = int(nRows[iR, 0])

@@ -51,7 +51,7 @@ def normalize_args(args):
     bool_fields = [
         "Iter", "showDist", "writeSampleMap", "showProg", "showProgress",
         "imported", "optIterAlg", "bInitialized", "bExport",
-        "floodimage", "failed", "writeSampleDist", "useSBACache",
+        "floodimage", "failed", "writeSampleDist", "useSBACache", "resume_morph",
     ]
     for name in bool_fields:
         if hasattr(args, name):
@@ -259,6 +259,9 @@ def parse(config_json=None):
     # -----------------------------
     # morph thresholds
     # -----------------------------
+    parser.add_argument('--resume_morph', type=_str2bool, default=True,
+                        help='If True, skip binary classification when Cat_init and ThFine outputs already exist, and run morph directly.')
+
     parser.add_argument('--morphPreBlockSize', type=int, default=1000,
                         help='Block size for morph_pre. Default 1000.')
 
@@ -515,6 +518,70 @@ def _infer_scene_name(filepath):
     return os.path.splitext(os.path.basename(first))[0]
 
 
+def _binary_outputs_ready(args_pol, ds_pol):
+    file_cat = getattr(
+        args_pol,
+        "fileCatInit",
+        os.path.join(args_pol.dirTempPol, "Cat_init.tif")
+    )
+
+    file_th_root = getattr(
+        args_pol,
+        "fileThFine_root",
+        os.path.join(args_pol.dirTempPol, "ThFine_")
+    )
+
+    # Cat_init
+    if not os.path.exists(file_cat):
+        return False
+
+    # sigma2
+    sigma2 = getattr(ds_pol, "sigma2", None)
+    if sigma2 is None:
+        return False
+
+    sigma2 = np.asarray(sigma2).reshape(-1)
+    if sigma2.size == 0:
+        return False
+
+    # ThFine_*
+    ncat = int(sigma2.size)
+
+    for k in range(1, ncat + 2):
+        file_th = f"{file_th_root}{k}.tif"
+        if not os.path.exists(file_th):
+            return False
+
+    return True
+
+
+def _sigma2_cache_path(args_pol):
+    return os.path.join(args_pol.dirTempPol, "sigma2_cache.npz")
+
+
+def _save_sigma2_cache(args_pol, ds_pol):
+    if not hasattr(ds_pol, "sigma2"):
+        raise AttributeError("ds_pol has no attribute 'sigma2'; binary did not generate it.")
+
+    sigma2 = np.asarray(ds_pol.sigma2, dtype=np.float64).reshape(-1)
+
+    out_file = _sigma2_cache_path(args_pol)
+    os.makedirs(os.path.dirname(out_file), exist_ok=True)
+
+    np.savez(
+        out_file,
+        sigma2=sigma2
+    )
+
+def _load_sigma2_cache(args_pol):
+    cache_file = _sigma2_cache_path(args_pol)
+    if not os.path.exists(cache_file):
+        return None
+
+    data = np.load(cache_file)
+    return np.asarray(data["sigma2"], dtype=np.float64).reshape(-1)
+
+
 @tim
 def Binary_classification_dualpol(args_scene, ds_scene):
     """
@@ -537,11 +604,23 @@ def Binary_classification_dualpol(args_scene, ds_scene):
 
     for pol in ["VV", "VH"]:
         print(f"[Binary_classification_dualpol] start {pol}", flush=True)
+
         args_pol = _make_pol_args(args_scene, pol)
         ds_pol = _make_single_pol_ds(ds_scene, pol)
 
-        args_pol, ds_pol = Binary_classification(args_pol, ds_pol)
+        # try to restore sigma2 cache first
+        sigma2_cache = _load_sigma2_cache(args_pol)
+        if sigma2_cache is not None:
+            ds_pol.sigma2 = sigma2_cache
 
+        # short-circuit if binary outputs are ready
+        if getattr(args_scene, "resume_morph", False) and _binary_outputs_ready(args_pol, ds_pol):
+            print(f"[Binary_classification_dualpol] scene {pol} has been done, skip ...", flush=True)
+        else:
+            args_pol, ds_pol = Binary_classification(args_pol, ds_pol)
+            _save_sigma2_cache(args_pol, ds_pol)
+
+        # always store result, whether skipped or recomputed
         scene_pack["pol_results"][pol] = (args_pol, ds_pol)
         print(f"[Binary_classification_dualpol] done {pol}", flush=True)
 
@@ -630,24 +709,6 @@ def RAPID(*args, **kwargs):
 
     # mark the first scene as flood image if old code still checks this flag
     args_list[0].floodimage = True
-
-    if args_list[0].MODE == 'swd':
-        print('Running swd!')
-        output = dask.compute(*[dask.delayed(Load_Data)(args_list[0])])
-        output[0][1].Compensate_mask, output[0][0].fileOutCompensate, output[0][1].direct_mask = swd(
-            output[0][0], output[0][1]
-        )
-        output[0][0].MODE = 'single'
-        out_filepath = quick_look(output)
-        return out_filepath
-
-    if args_list[0].MODE == 'desert':
-        print('Running desert mode!')
-        output = dask.compute(*[dask.delayed(Load_Data)(arggs) for arggs in args_list])
-        args_ndfi, ds_ndfi = NDFI(output)
-        args_ndfi, ds_ndfi = NDFI_morph(args_ndfi, ds_ndfi)
-        args_ndfi, ds_ndfi = NDFI_compensate(args_ndfi, ds_ndfi)
-        return args_ndfi, ds_ndfi
 
     # ----------------------------------
     # WORKFLOW:

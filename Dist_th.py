@@ -636,7 +636,7 @@ def dist_th_window_worker(
         catOpt = tmpb
 
     if (iR == 0 and iC == 0) or ((iR * int(args.nC) + iC) % 2000 == 0):
-        print(f"[dist_th_window_worker_fast] done ({iR+1},{iC+1})", flush=True)
+        print(f"[dist_th_window_worker] done ({iR+1},{iC+1})", flush=True)
 
     return int(iR), int(iC), thProbOpt, catOpt, float(thI_low)
 

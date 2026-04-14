@@ -431,7 +431,6 @@ def _init_bimod_one_window_from_bbox(args,
 
 
 def run_init_bimodality_dask(args, ds):
-    # ---- 准备 window 参数 ----
     r0s = np.asarray(ds.r0Sel).astype(np.int64).ravel()
     c0s = np.asarray(ds.c0Sel).astype(np.int64).ravel()
     nrs = np.asarray(ds.nRowsSel).astype(np.int64).ravel()
@@ -442,14 +441,11 @@ def run_init_bimodality_dask(args, ds):
     if nWindows == 0:
         return args, ds
 
-    # ---- 联合 bbox ----
     r_min = int(r0s.min())
     c_min = int(c0s.min())
     r_max = int((r0s + nrs).max())
     c_max = int((c0s + ncs).max())
 
-    # ---- 只 compute 两次：把 bbox 子区域拉成 numpy ----
-    # 这一步发生在当前 worker/进程内（线程模式下就是同一进程）
     img_bbox = ds.img_lp[r_min:r_max, c_min:c_max].compute()
     wo_bbox = ds.water_occurrence[r_min:r_max, c_min:c_max].compute()
 
@@ -459,34 +455,28 @@ def run_init_bimodality_dask(args, ds):
     results = []
     t0 = time.perf_counter()
 
-    # 控制日志频率
-    log_every = 10          # 每完成多少个 window 打一次进度
-    slow_warn_s = 30      # 单个 window 超过多少秒报警
-    topk_track = 5         # 记录最慢的 topk windows
+    log_every = 20
+    # slow_warn_s = 30
+    # topk_track = 5
 
-    # 记录最慢 windows（(elapsed, w)）
-    slowest = []
+    # slowest = []
 
     for w in range(nWindows):
         t_w0 = time.perf_counter()
 
-        # 取参数（保持你原来的方式）
         thOcc = float(ths[w])
         r0 = int(r0s[w]); c0 = int(c0s[w])
         nRows = int(nrs[w]); nCols = int(ncs[w])
 
-        # --- 切片（numpy view，理论上很快） ---
         rr0 = r0 - r_min
         cc0 = c0 - c_min
         I_lin = img_bbox[rr0:rr0+nRows, cc0:cc0+nCols]
         probW = wo_bbox [rr0:rr0+nRows, cc0:cc0+nCols]
 
-        # --- 计时：GMM ---
         t_g0 = time.perf_counter()
         Iu, pc, mu, sigma, RH = threshold_gmm_window(I_lin, probW, thOcc, waterOnly=False)
         t_g1 = time.perf_counter()
 
-        # --- 计时：validate ---
         t_v0 = time.perf_counter()
         maskValid, AD = validate_gmm(
             RH, pc, mu, sigma, Iu,
@@ -520,35 +510,30 @@ def run_init_bimodality_dask(args, ds):
             "r0": r0, "c0": c0, "nRows": nRows, "nCols": nCols, "thOcc": thOcc
         })
 
-        # 维护 slowest topk
-        slowest.append((dt, w))
-        slowest.sort(reverse=True)
-        if len(slowest) > topk_track:
-            slowest = slowest[:topk_track]
+        # slowest.append((dt, w))
+        # slowest.sort(reverse=True)
+        # if len(slowest) > topk_track:
+        #     slowest = slowest[:topk_track]
 
-        # 进度日志
         if (w + 1) % log_every == 0:
             elapsed = time.perf_counter() - t0
             print(f"[run_init_bimodality] {w+1}/{nWindows} done | elapsed={elapsed:.1f}s | last={dt:.3f}s (gmm={dt_gmm:.3f}s, val={dt_val:.3f}s)",
               flush=True)
 
-        # 慢 window 报警（立即告诉你哪个窗口慢）
-        if dt > slow_warn_s:
-            print(f"[run_init_bimodality][SLOW] w={w} dt={dt:.3f}s (gmm={dt_gmm:.3f}s, val={dt_val:.3f}s) "
-                  f"size={nRows}x{nCols} r0,c0=({r0},{c0}) thOcc={thOcc:.3f}",
-                  flush=True)
+        # if dt > slow_warn_s:
+        #     print(f"[run_init_bimodality][SLOW] w={w} dt={dt:.3f}s (gmm={dt_gmm:.3f}s, val={dt_val:.3f}s) "
+        #           f"size={nRows}x{nCols} r0,c0=({r0},{c0}) thOcc={thOcc:.3f}",
+        #           flush=True)
 
-    # 汇总最慢窗口
     elapsed_all = time.perf_counter() - t0
-    print(f"[run_init_bimodality] serial windows finished. total_elapsed={elapsed_all:.1f}s", flush=True)
-    print("[run_init_bimodality] top slowest windows:", flush=True)
-    for dt, w in slowest:
-        r = results[w]
-        print(f"  w={w:4d} dt={dt:.3f}s (gmm={r['dt_gmm']:.3f}s, val={r['dt_val']:.3f}s) "
-              f"size={r['nRows']}x{r['nCols']} r0,c0=({r['r0']},{r['c0']}) thOcc={r['thOcc']:.3f}",
-              flush=True)
+    # print(f"[run_init_bimodality] serial windows finished. total_elapsed={elapsed_all:.1f}s", flush=True)
+    # print("[run_init_bimodality] top slowest windows:", flush=True)
+    # for dt, w in slowest:
+    #     r = results[w]
+    #     print(f"  w={w:4d} dt={dt:.3f}s (gmm={r['dt_gmm']:.3f}s, val={r['dt_val']:.3f}s) "
+    #           f"size={r['nRows']}x{r['nCols']} r0,c0=({r['r0']},{r['c0']}) thOcc={r['thOcc']:.3f}",
+    #           flush=True)
 
-    # ---- 分配输出数组 ----
     Iu = np.full((nWindows,), np.nan, dtype=np.float64)
     RH = np.full((nWindows,), np.nan, dtype=np.float64)
     AD = np.full((nWindows,), np.nan, dtype=np.float64)
@@ -567,13 +552,11 @@ def run_init_bimodality_dask(args, ds):
         sigma[w, :] = np.asarray(r["sigma"], dtype=np.float64).reshape(2)
         valid[w] = bool(r["valid"])
 
-    # ---- MATLAB: maskValid = imag(Iu)==0; 这里用 finite 代替 ----
     maskIuReal = np.isfinite(Iu)
-    maskKeep = maskIuReal  # 或：maskKeep = maskIuReal & valid
+    maskKeep = maskIuReal
 
     mu1 = mu[:, 0]
 
-    # ---- 同步过滤 ds 的相关字段（保持你原逻辑）----
     for name, arr in [
         ("thOcc", np.asarray(ds.thOcc).reshape(-1)),
         ("r0Sel", np.asarray(ds.r0Sel).reshape(-1)),
@@ -597,7 +580,6 @@ def run_init_bimodality_dask(args, ds):
     ds.AD = AD[maskKeep]
     ds.valid_bimod = valid[maskKeep]
 
-    # ---- 保存 UnCat ----
     if getattr(args, "fileSBAInitUnCat", None):
         os.makedirs(os.path.dirname(args.fileSBAInitUnCat) or ".", exist_ok=True)
         savemat(args.fileSBAInitUnCat, {
