@@ -14,11 +14,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.mixture import GaussianMixture
 from scipy.stats import multivariate_normal
 from sklearn.cluster import KMeans
-from EM_threshold import *
 import scipy.ndimage.filters as filters
 from scipy.ndimage import median_filter
 from scipy.io import savemat, loadmat
-from Initial_sample import *
 from rasterio.windows import Window
 from Dist_th import dist_th_window_worker, dist_th_postprocess
 from Statistics import KLD_chi2_frm_sample, validate_gmm, get_block, build_Iu_and_meanTransact

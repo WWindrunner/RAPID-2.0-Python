@@ -9,10 +9,6 @@ from utils import *
 from Load_Data import *
 from Binary_classification import *
 from Morpho_process import *
-from Compensation import *
-from NDFI import *
-from quick_look import *
-from Self_supervised import *
 import subprocess
 import warnings
 import dask
@@ -20,12 +16,8 @@ import dask
 warnings.filterwarnings("ignore")
 
 '''
-Developed by: Maopu Xu, Qing Yang, Xinyi Shen. University of Wisconsin-Milwaukee.
+Developed by: Maopu Xu, Xinyi Shen, Qing Yang. University of Wisconsin-Milwaukee.
 
-Modified for scene-level dual-pol workflow:
-- one scene = one Load_Data
-- Binary_classification runs separately for VV and VH
-- subsequent processing works on the scene package
 '''
 
 
@@ -636,22 +628,6 @@ def Morph_proc_scene(scene_pack):
     scene_pack = morph_pre_scene(scene_pack)
     scene_pack = morph_proc_scene_main(scene_pack)
     return scene_pack
-
-
-@tim
-def quick_look_scene(scene_output):
-    """
-    Temporary quick-look wrapper.
-
-    Current behavior:
-      - use VV branch quick_look-compatible output only
-      - keep scene-level structure unchanged for later dual-pol fusion
-    """
-    vv_only_output = []
-    for scene_pack in scene_output:
-        if "VV" in scene_pack["pol_results"]:
-            vv_only_output.append(scene_pack["pol_results"]["VV"])
-    return quick_look(vv_only_output)
 
 
 @tim
