@@ -216,7 +216,7 @@ def parse(config_json=None):
     parser.add_argument('--writeSampleDist', type=_str2bool, default=True,
                         help='Write chi-square vs empirical distribution figures for each category. Default True.')
     parser.add_argument('--useSBACache', type=_str2bool, default=False,
-                        help='Whether to load SBA cached intermediate results (default: False).')
+                        help='Whether to load SBA cached intermediate results (default: False) (WARNING: not implemented).')
 
     # -----------------------------
     # dist_th / worker thresholds
@@ -632,7 +632,10 @@ def Morph_proc_scene(scene_pack):
 
 @tim
 def RAPID(*args, **kwargs):
-    if len(args) > 1 and len(args) <= 4:
+    import logging
+    logging.getLogger("distributed.scheduler").setLevel(logging.ERROR)
+
+    if 1 < len(args) <= 4:
         # terminal input:
         #   python RAPID.py vv.tif vh.tif out_dir
         # or

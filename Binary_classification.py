@@ -1164,78 +1164,10 @@ def optimizeDist6(args, ds):
     print(f"[optimizeDist6] useSBACache={use_sba_cache}", flush=True)
 
     # 2) run init bimodality GMM per window
-    if (
-        use_sba_cache
-        and getattr(args, "fileSBAInitUnCat", None)
-        and os.path.exists(args.fileSBAInitUnCat)
-    ):
-        print("loading SBAInitUnCat cache ...", flush=True)
-        d = loadmat(args.fileSBAInitUnCat)
-
-        # restore arrays with explicit dtype / contiguous layout
-        for k in ["r0Sel", "c0Sel", "nRowsSel", "nColsSel"]:
-            if k in d:
-                setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.int64))
-
-        for k in ["thOcc", "mu1", "Iu", "peakWater", "medianWater", "stdWater"]:
-            if k in d:
-                setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.float64))
-
-        # optional warm-up
-        try:
-            r0s = np.asarray(ds.r0Sel, dtype=np.int64).ravel()
-            c0s = np.asarray(ds.c0Sel, dtype=np.int64).ravel()
-            nrs = np.asarray(ds.nRowsSel, dtype=np.int64).ravel()
-            ncs = np.asarray(ds.nColsSel, dtype=np.int64).ravel()
-
-            if r0s.size > 0:
-                r_min = int(r0s.min())
-                c_min = int(c0s.min())
-                r_max = int((r0s + nrs).max())
-                c_max = int((c0s + ncs).max())
-
-                print(
-                    f"[optimizeDist6] warming SBA bbox from cache: "
-                    f"r=({r_min},{r_max}), c=({c_min},{c_max})",
-                    flush=True
-                )
-
-                _ = ds.img_lp[r_min:r_max, c_min:c_max].compute()
-                _ = ds.water_occurrence[r_min:r_max, c_min:c_max].compute()
-
-                print("[optimizeDist6] SBA cache warm-up done", flush=True)
-            else:
-                print("[optimizeDist6] SBA cache warm-up skipped: empty r0Sel/c0Sel", flush=True)
-
-        except Exception as e:
-            print(f"[optimizeDist6] SBA cache warm-up skipped due to error: {e}", flush=True)
-
-    else:
-        if use_sba_cache:
-            print("[optimizeDist6] SBAInitUnCat cache not found, recomputing ...", flush=True)
-        args, ds = run_init_bimodality_dask(args, ds)
+    args, ds = run_init_bimodality_dask(args, ds)
 
     # 3) categorize by peakWater (kmeans) + remove tiny classes + save Cat
-    if (
-        use_sba_cache
-        and getattr(args, "fileSBAInitCat", None)
-        and os.path.exists(args.fileSBAInitCat)
-    ):
-        print("loading SBAInitCat cache ...", flush=True)
-        d = loadmat(args.fileSBAInitCat)
-
-        for k in ["r0Sel", "c0Sel", "nRowsSel", "nColsSel", "idx"]:
-            if k in d:
-                setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.int64))
-
-        for k in ["thOcc", "mu1", "Iu", "C"]:
-            if k in d:
-                setattr(ds, k, np.ascontiguousarray(np.asarray(d[k]).squeeze(), dtype=np.float64))
-
-    else:
-        if use_sba_cache:
-            print("[optimizeDist6] SBAInitCat cache not found, recategorizing ...", flush=True)
-        args, ds = categorize_water_classes(args, ds)
+    args, ds = categorize_water_classes(args, ds)
 
     # 4) per-category sample map + init dist fitting + category screening
     fileSampleMap_root = os.path.join(args.dirTempPol, "SampleMap_")
