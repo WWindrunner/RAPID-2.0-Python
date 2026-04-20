@@ -251,7 +251,7 @@ def parse(config_json=None):
     # -----------------------------
     # morph thresholds
     # -----------------------------
-    parser.add_argument('--resume_morph', type=_str2bool, default=True,
+    parser.add_argument('--resume_morph', type=_str2bool, default=False,
                         help='If True, skip binary classification when Cat_init and ThFine outputs already exist, and run morph directly.')
 
     parser.add_argument('--morphPreBlockSize', type=int, default=1000,
