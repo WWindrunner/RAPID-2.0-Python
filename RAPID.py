@@ -12,6 +12,7 @@ from Morpho_process import *
 import subprocess
 import warnings
 import dask
+from Quick_look import *
 
 warnings.filterwarnings("ignore")
 
@@ -705,6 +706,29 @@ def RAPID(*args, **kwargs):
 
     with Timer('Morph_proc_scene'):
         scene_output = [Morph_proc_scene(scene_pack) for scene_pack in scene_output]
+
+    with Timer('Quicklook'):
+        for scene_pack in scene_output:
+            args_scene = scene_pack["scene_args"]
+            ds_scene = scene_pack["scene_ds"]
+            morph = scene_pack["morph_proc"]
+
+            fileMorphOut = getattr(morph, "fileMorphOut", None)
+
+            if fileMorphOut is None or (not os.path.exists(fileMorphOut)):
+                print(f"[quicklook] skip {args_scene.granules}: fileMorphOut not found", flush=True)
+                continue
+
+            try:
+                quicklook(
+                    fileMorphOut=fileMorphOut,
+                    ds=ds_scene,
+                    args=args_scene,
+                    out_png=os.path.join(args_scene.dirOut, "quicklook.png"),
+                    scene_name=args_scene.granules
+                )
+            except Exception as e:
+                print(f"[quicklook] failed for {args_scene.granules}: {e}", flush=True)
 
     if client is not None:
         try:
