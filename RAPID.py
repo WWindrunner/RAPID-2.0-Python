@@ -291,7 +291,7 @@ def parse(config_json=None):
     parser.add_argument('--thPrcBimodal', nargs='*', type=float, default=[50, 25, 10],
                         help='Percentiles of bimodality thresholds. Default [50, 25, 10].')
 
-    parser.add_argument('--rNWB_WST', nargs='*', type=float, default=[0.3, 0.3, 0.4, 0.4, 0.4],
+    parser.add_argument('--rNWB_WST', nargs='*', type=float, default=[0.3, 0.6, 0.5, 0.4, 0.4],
                         help='Maximum built-up fraction allowed for each credibility level in morphology. Default [0.3, 0.3, 0.4, 0.4, 0.4].')
 
     parser.add_argument('--thSizeMorph', nargs='*', type=float, default=[10, 10, 10, 10, 50],
@@ -712,11 +712,13 @@ def RAPID(*args, **kwargs):
             args_scene = scene_pack["scene_args"]
             ds_scene = scene_pack["scene_ds"]
             morph = scene_pack["morph_proc"]
+            # print(morph)
 
-            fileMorphOut = getattr(morph, "fileMorphOut", None)
+            fileMorphOut = morph.get("fileMorphOut")
+            # print(fileMorphOut)
 
-            if fileMorphOut is None or (not os.path.exists(fileMorphOut)):
-                print(f"[quicklook] skip {args_scene.granules}: fileMorphOut not found", flush=True)
+            if not fileMorphOut or (not os.path.exists(fileMorphOut)):
+                print(f"[Quicklook] skip {args_scene.granules}: fileMorphOut not found", flush=True)
                 continue
 
             try:
@@ -728,7 +730,7 @@ def RAPID(*args, **kwargs):
                     scene_name=args_scene.granules
                 )
             except Exception as e:
-                print(f"[quicklook] failed for {args_scene.granules}: {e}", flush=True)
+                print(f"[Quicklook] failed for {args_scene.granules}: {e}", flush=True)
 
     if client is not None:
         try:

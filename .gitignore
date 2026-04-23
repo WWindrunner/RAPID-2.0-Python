@@ -1,2 +1,5 @@
 .idea/
 *~
+output/
+test_images/
+logs/
