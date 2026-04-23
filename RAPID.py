@@ -729,6 +729,13 @@ def RAPID(*args, **kwargs):
                     out_png=os.path.join(args_scene.dirOut, "quicklook.png"),
                     scene_name=args_scene.granules
                 )
+                quicklook_map(
+                    fileMorphOut=fileMorphOut,
+                    ds=ds_scene,
+                    args=args_scene,
+                    out_png=os.path.join(args_scene.dirOut, "quicklook_map.png"),
+                    scene_name=args_scene.granules
+                )
             except Exception as e:
                 print(f"[Quicklook] failed for {args_scene.granules}: {e}", flush=True)
 
