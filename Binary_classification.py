@@ -613,6 +613,10 @@ def categorize_water_classes(args, ds):
     if peak.shape[0] == 0:
         raise RuntimeError("No windows left before kmeans categorization.")
 
+    nWaterClasses = min(nWaterClasses, peak.shape[0], np.unique(peak).size)
+    if nWaterClasses < 1:
+        raise RuntimeError("Not enough valid peakWater samples for kmeans.")
+
     km = KMeans(n_clusters=nWaterClasses, n_init=20, random_state=0)
     idx0 = km.fit_predict(peak)  # 0..k-1
     C0 = km.cluster_centers_.flatten()

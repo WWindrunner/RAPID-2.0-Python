@@ -140,7 +140,7 @@ def patchBimodal(maskSeeds, I, thSizeBimodal, thPC, thAD, thRH, thDist2Mean):
             objID[maski] = pid
 
     th_list = np.asarray(th_list, dtype=float)
-    thBimodal_vals = thBimodal_map[thBimodal_map > 0]
+    thBimodal_vals = thBimodal_map[np.isfinite(thBimodal_map) & (thBimodal_map != 0)]
 
     return thBimodal_vals, objID, th_list
 
@@ -976,6 +976,10 @@ def morph_block_worker(
     rows, cols = rasWBCo.shape
     rasWB = np.zeros((rows, cols), dtype=np.float32)
 
+    thGlobal = np.asarray(thGlobal, dtype=np.float32).reshape(-1)
+    thGlobal_1 = np.float32(thGlobal[0]) if thGlobal.size > 0 and np.isfinite(thGlobal[0]) else np.float32(0.0)
+    thGlobal_2 = np.float32(thGlobal[1]) if thGlobal.size > 1 and np.isfinite(thGlobal[1]) else np.float32(np.nan)
+
     # MATLAB:
     # Ipp(Ipp==0)=NaN;
     # Ipp(Iqp==0)=NaN;
@@ -1117,7 +1121,7 @@ def morph_block_worker(
         thPWqpBlock = np.asarray(thPWqpBlock, dtype=np.float32)
         maskPatches = np.asarray(maskPatches, dtype=bool)
 
-        fill_val = np.float32(thGlobal if np.isfinite(thGlobal) else 0.0)
+        fill_val = thGlobal_1
         loc = maskPatches
         thPWppBlock[loc] = np.where(thPWppBlock[loc] > 0, thPWppBlock[loc], fill_val)
 
@@ -1142,7 +1146,7 @@ def morph_block_worker(
             thPWqpBlock = np.asarray(thPWqpBlock, dtype=np.float32)
             maskPatches = np.asarray(maskPatches, dtype=bool)
 
-            cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
+            cap_val = np.nanmin([thGlobal_2, thHigh]) if np.any(np.isfinite([thGlobal_2, thHigh])) else np.nan
             if np.isfinite(cap_val):
                 thMatOut = np.minimum(thMatOut, np.float32(cap_val))
 
@@ -1157,7 +1161,7 @@ def morph_block_worker(
             thMatOut = np.asarray(thMatOut, dtype=np.float32)
             maskPatches = np.asarray(maskPatches, dtype=bool)
 
-            cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
+            cap_val = np.nanmin([thGlobal_2, thHigh]) if np.any(np.isfinite([thGlobal_2, thHigh])) else np.nan
             if np.isfinite(cap_val):
                 thMatOut = np.minimum(thMatOut, np.float32(cap_val))
 
@@ -1176,7 +1180,7 @@ def morph_block_worker(
         thMatOut = np.asarray(thMatOut, dtype=np.float32)
         maskPatches = np.asarray(maskPatches, dtype=bool)
 
-        cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
+        cap_val = np.nanmin([thGlobal_2, thHigh]) if np.any(np.isfinite([thGlobal_2, thHigh])) else np.nan
         if np.isfinite(cap_val):
             thMatOut = np.minimum(thMatOut, np.float32(cap_val))
 
@@ -1188,7 +1192,7 @@ def morph_block_worker(
     # ---- low-credible objects ----
     maskLow = (rasWB == 5)
     if np.any(maskLow):
-        cap_val = np.nanmin([thGlobal, thHigh]) if np.any(np.isfinite([thGlobal, thHigh])) else np.nan
+        cap_val = np.nanmin([thGlobal_2, thHigh]) if np.any(np.isfinite([thGlobal_2, thHigh])) else np.nan
         if np.isfinite(cap_val):
             rasWB[maskLow] = 5 * (Ipp[maskLow] < np.float32(cap_val)).astype(np.float32)
 
@@ -1416,12 +1420,14 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     idx_vh = np.argsort(Cqp) + 1
 
     if thBimodal.size > 0:
-        thPrcBimodal = float(getattr(args_vv, "thPrcBimodal", 50.0))
-        thGlobal_db = float(np.percentile(thBimodal, thPrcBimodal))
+        thPrcBimodal = np.asarray(getattr(args_vv, "thPrcBimodal", [50, 25, 10]), dtype=float).reshape(-1)
+        if thPrcBimodal.size == 0:
+            thPrcBimodal = np.array([50, 25, 10], dtype=float)
+        thGlobal_db = np.percentile(thBimodal, thPrcBimodal).astype(float)
         thGlobal = 10.0 ** (thGlobal_db / 10.0)
     else:
-        thGlobal_db = np.nan
-        thGlobal = np.nan
+        thGlobal_db = np.full(3, np.nan, dtype=float)
+        thGlobal = np.full(3, np.nan, dtype=float)
 
     WBClasses = np.asarray(getattr(args_vv, "WBClasses", [80, 90, 95]), dtype=int)
     EXClasses = np.asarray(getattr(args_vv, "EXClasses", []), dtype=int)
