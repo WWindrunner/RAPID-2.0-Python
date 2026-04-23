@@ -1204,8 +1204,10 @@ def morph_block_worker(
     lstRealCred = [None] * nCred
 
     for credibility in range(1, nCred + 1):
-        maskExt = (rasWB >= credibility)
-        if credibility > 1:
+        if credibility == 1:
+            maskExt = (rasWB == 1) & maskPW
+        else:
+            maskExt = (rasWB >= credibility)
             for c in range(1, credibility):
                 maskExt = maskExt & (CM[:, :, c - 1] == 0)
 
