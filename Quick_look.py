@@ -8,20 +8,49 @@ import contextily as ctx
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 
 
+def _read_raster_preview_with_transform(src, max_dim=1800):
+    """
+    Read raster preview and return adjusted transform.
+    """
+    h, w = src.height, src.width
+    scale = min(max_dim / max(h, w), 1.0)
+
+    out_h = max(1, int(h * scale))
+    out_w = max(1, int(w * scale))
+
+    data = src.read(
+        1,
+        out_shape=(out_h, out_w),
+        resampling=Resampling.nearest
+    )
+
+    transform = src.transform * src.transform.scale(
+        src.width / out_w,
+        src.height / out_h
+    )
+
+    return data, transform
+
+
 def _reproject_array_to_3857(data, src_transform, src_crs):
-    """
-    Reproject a numpy array to EPSG:3857
-    """
     dst_crs = "EPSG:3857"
 
     h, w = data.shape
 
+    left = src_transform.c
+    top = src_transform.f
+    right = left + w * src_transform.a
+    bottom = top + h * src_transform.e
+
     transform, width, height = calculate_default_transform(
-        src_crs, dst_crs, w, h,
-        left=src_transform.c,
-        bottom=src_transform.f + h * src_transform.e,
-        right=src_transform.c + w * src_transform.a,
-        top=src_transform.f
+        src_crs,
+        dst_crs,
+        w,
+        h,
+        left=left,
+        bottom=bottom,
+        right=right,
+        top=top
     )
 
     dst = np.zeros((height, width), dtype=data.dtype)
@@ -33,7 +62,9 @@ def _reproject_array_to_3857(data, src_transform, src_crs):
         src_crs=src_crs,
         dst_transform=transform,
         dst_crs=dst_crs,
-        resampling=Resampling.nearest
+        resampling=Resampling.nearest,
+        src_nodata=0,
+        dst_nodata=0
     )
 
     return dst, transform
@@ -283,35 +314,32 @@ def quicklook_map(fileMorphOut, ds, args, out_png=None, scene_name=None):
     """
     Quicklook with basemap:
       left  = LCC
-      right = Google/OSM map + morph overlay
+      right = basemap + morph overlay
     """
-    import os
 
     if out_png is None:
         out_png = os.path.join(os.path.dirname(fileMorphOut), "quicklook_map.png")
 
+    # =========================
+    # Read morph with correct preview transform
+    # =========================
     with rasterio.open(fileMorphOut) as src:
-        morph = src.read(1)
-        transform = src.transform
-        crs = src.crs
+        morph, morph_transform = _read_raster_preview_with_transform(src, max_dim=1800)
+        morph_crs = src.crs
 
-    # ===== preview =====
-    lcc = _to_numpy_preview(ds.land_cover)
-    morph = _to_numpy_preview(morph)
+    if morph_crs is None:
+        print("[quicklook_map] morph CRS is None, skip basemap quicklook.")
+        return None
 
-    min_h = min(lcc.shape[0], morph.shape[0])
-    min_w = min(lcc.shape[1], morph.shape[1])
-
-    lcc = lcc[:min_h, :min_w]
-    morph = morph[:min_h, :min_w]
-
+    # =========================
+    # Reproject morph to EPSG:3857
+    # =========================
     morph_3857, transform_3857 = _reproject_array_to_3857(
         morph,
-        transform,
-        crs
+        morph_transform,
+        morph_crs
     )
 
-    # extent
     h, w = morph_3857.shape
     xmin = transform_3857.c
     ymax = transform_3857.f
@@ -319,26 +347,63 @@ def quicklook_map(fileMorphOut, ds, args, out_png=None, scene_name=None):
     ymin = ymax + h * transform_3857.e
     extent_3857 = [xmin, xmax, ymin, ymax]
 
+    # =========================
+    # LCC preview
+    # =========================
+    lcc = _to_numpy_preview(ds.land_cover)
+
+    # LCC extent: 如果 args.transform 是原始分辨率，这里也要按 preview 修正
+    if hasattr(args, "transform") and args.transform is not None:
+        full_h = getattr(args, "height", lcc.shape[0])
+        full_w = getattr(args, "width", lcc.shape[1])
+
+        preview_h, preview_w = lcc.shape
+        lcc_transform = args.transform * args.transform.scale(
+            full_w / preview_w,
+            full_h / preview_h
+        )
+
+        xmin_lcc = lcc_transform.c
+        ymax_lcc = lcc_transform.f
+        xmax_lcc = xmin_lcc + preview_w * lcc_transform.a
+        ymin_lcc = ymax_lcc + preview_h * lcc_transform.e
+        extent_lcc = [xmin_lcc, xmax_lcc, ymin_lcc, ymax_lcc]
+    else:
+        extent_lcc = None
+
+    # =========================
+    # Plot
+    # =========================
     fig, axes = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
     fig.patch.set_facecolor("white")
 
-    # LCC
-    extent_lcc = _extent_from_args(args, (min_h, min_w))
     _plot_lcc(axes[0], lcc, extent=extent_lcc)
 
     ax = axes[1]
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
 
-    # morph overlay
+    try:
+        ctx.add_basemap(
+            ax,
+            crs="EPSG:3857",
+            source=ctx.providers.Esri.WorldImagery,
+            zoom="auto"
+        )
+    except Exception as e:
+        print(f"[quicklook_map] basemap failed: {e}")
+
+    # 再叠加 morph
     valid_overlay = morph_3857 > 0
     morph_masked = np.ma.masked_where(~valid_overlay, morph_3857)
 
     colors = [
         (0, 0, 0, 0.0),
-        (0.00, 0.20, 0.90, 0.95),   # Permanent
-        (0.68, 0.85, 1.00, 0.95),   # Positive Occurrence
-        (0.52, 0.36, 0.86, 0.95),   # High Confidence
-        (0.95, 0.95, 0.70, 0.95),   # Moderate
-        (0.93, 0.28, 0.12, 0.95),   # Low
+        (0.00, 0.20, 0.90, 0.90),   # Permanent
+        (0.68, 0.85, 1.00, 0.80),   # Positive Occurrence
+        (0.52, 0.36, 0.86, 0.85),   # High Confidence
+        (0.95, 0.95, 0.70, 0.80),   # Moderate
+        (0.93, 0.28, 0.12, 0.85),   # Low
     ]
 
     cmap = ListedColormap(colors)
@@ -349,17 +414,10 @@ def quicklook_map(fileMorphOut, ds, args, out_png=None, scene_name=None):
         cmap=cmap,
         norm=norm,
         extent=extent_3857,
-        origin="upper"
+        origin="upper",
+        interpolation="nearest",
+        zorder=10
     )
-
-    try:
-        ctx.add_basemap(
-            ax,
-            crs="EPSG:3857",
-            source=ctx.providers.CartoDB.Positron
-        )
-    except Exception as e:
-        print(f"Basemap failed, fallback to no basemap: {e}")
 
     ax.set_title("Flood map (basemap)")
     ax.set_axis_off()
