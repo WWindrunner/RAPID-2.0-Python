@@ -114,19 +114,18 @@ def _plot_lcc(ax, lcc, extent=None):
     Plot ESA WorldCover-style land cover with legend.
     """
     class_info = [
-        (10, "Tree cover", "#6aa84f"),
-        (20, "Shrubland", "#a4de6c"),
-        (30, "Grassland", "#8fce00"),
-        (40, "Cropland", "#d9d24a"),
-        (50, "Built-up", "#000000"),
-        (60, "Bare / sparse vegetation", "#c69c2d"),
-        (70, "Snow and ice", "#e6d5e8"),
-        (80, "Permanent water bodies", "#3c78d8"),
-        (90, "Herbaceous wetland", "#76d7c4"),
-        (95, "Mangroves", "#45818e"),
-        (100, "Moss and lichen", "#999999"),
+        (10, "Tree cover", "#006400"),
+        (20, "Shrubland", "#ffbb22"),
+        (30, "Grassland", "#ffff4c"),
+        (40, "Cropland", "#f096ff"),
+        (50, "Built-up", "#fa0000"),
+        (60, "Bare / sparse vegetation", "#b4b4b4"),
+        (70, "Snow and ice", "#f0f0f0"),
+        (80, "Permanent water bodies", "#0064c8"),
+        (90, "Herbaceous wetland", "#0096a0"),
+        (95, "Mangroves", "#00cf75"),
+        (100, "Moss and lichen", "#fae6a0"),
     ]
-
     cmap = ListedColormap(["#d9d9d9"] + [x[2] for x in class_info])
 
     remap = np.zeros_like(lcc, dtype=np.int16)
@@ -393,8 +392,10 @@ def quicklook_map(fileMorphOut, ds, args, out_png=None, scene_name=None):
     except Exception as e:
         print(f"[quicklook_map] basemap failed: {e}")
 
-    # 再叠加 morph
-    valid_overlay = morph_3857 > 0
+    morph_3857 = np.asarray(morph_3857)
+    morph_3857 = np.where(np.isin(morph_3857, [1, 2, 3, 4, 5]), morph_3857, 0)
+
+    valid_overlay = np.isin(morph_3857, [1, 2, 3, 4, 5])
     morph_masked = np.ma.masked_where(~valid_overlay, morph_3857)
 
     colors = [
