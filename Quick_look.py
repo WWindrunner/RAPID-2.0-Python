@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap, BoundaryNorm
+from matplotlib.colors import ListedColormap, BoundaryNorm, NoNorm
 from matplotlib.patches import Patch
 import rasterio
 import contextily as ctx
@@ -111,7 +111,7 @@ def _extent_from_args(args, shape):
 
 def _plot_lcc(ax, lcc, extent=None):
     """
-    Plot ESA WorldCover-style land cover with legend.
+    Plot ESA WorldCover-style land cover with fixed class-color mapping.
     """
     class_info = [
         (10, "Tree cover", "#006400"),
@@ -126,7 +126,9 @@ def _plot_lcc(ax, lcc, extent=None):
         (95, "Mangroves", "#00cf75"),
         (100, "Moss and lichen", "#fae6a0"),
     ]
-    cmap = ListedColormap(["#d9d9d9"] + [x[2] for x in class_info])
+
+    colors = ["#d9d9d9"] + [x[2] for x in class_info]
+    cmap = ListedColormap(colors)
 
     remap = np.zeros_like(lcc, dtype=np.int16)
     for i, (val, _, _) in enumerate(class_info, start=1):
@@ -135,10 +137,12 @@ def _plot_lcc(ax, lcc, extent=None):
     ax.imshow(
         remap,
         cmap=cmap,
+        norm=NoNorm(),
         interpolation="nearest",
         extent=extent,
         origin="upper"
     )
+
     ax.set_title("Landcover")
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
@@ -147,6 +151,7 @@ def _plot_lcc(ax, lcc, extent=None):
         Patch(facecolor=color, edgecolor="black", linewidth=0.5, label=label)
         for _, label, color in class_info
     ]
+
     ax.legend(
         handles=handles,
         loc="lower right",
