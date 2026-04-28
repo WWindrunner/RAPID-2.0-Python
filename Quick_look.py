@@ -229,7 +229,7 @@ def _plot_sar_with_result(ax, sar, morph, extent=None):
         origin="upper",
     )
 
-    ax.set_title("VV + Morph result")
+    ax.set_title("SAR + RAPID v2.0 result")
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
 

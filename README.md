@@ -1,9 +1,10 @@
 # RAPID
 ## v2.0, Apr-14-2026.
 
+
 ## Overview
 
-This project is a Python implementation of the RAPID (RAdar-Produced Inundation Diary) flood mapping workflow, converted from an original MATLAB-based system. It processes Sentinel-1 SAR imagery to generate flood extent maps using both traditional threshold-based (0D) and improved 1D metrics.
+This project is a Python implementation of the RAPID (RAdar-Produced Inundation Diary) version 2.0 flood mapping workflow, converted from an original MATLAB-based system. It processes SAR imagery to generate flood extent maps.
 
 The workflow is designed for large-scale processing and supports parallel execution on HPC systems (e.g., SLURM). It integrates multi-step processing including preprocessing, threshold estimation, classification, and post-processing.
 
@@ -17,17 +18,18 @@ This repository aims to:
 
 
 ## Requirements
+Run the following command to install the conda environment for RAPID v2.0.
 ```
-TODO: export python library
+conda env create -f requirements.yml
 ```
 
 
 ## Usage
 ### RAPID.py
 ```
-python -u RAPID.py '<Input_SAR_Pol1>' '<Input_SAR_Pol2>' <Output_Folder>
+python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder>
 ```
-This will run RAPID in single mode with direct input from command line.
+This will run RAPID in single mode with direct input from command line. Note that by default the first input file should be cross polarization (VV or HH).
 ```
 python -u RAPID.py <PATH_JSON>
 ```
@@ -36,23 +38,22 @@ This will run RAPID with the input parameters that specified in <PATH_JSON>.
 ### config.json
 Specify input files, output folder, and parameters in .json file.
 
-
 ### Data input requirements
-SAR Data in GeoTIFF format, preprocessed to sigma0. Other required auxiliary data include Water Occurrence Data and LCC maps will be downloaded automatically.
+SAR Data in GeoTIFF format, without speckle filter, preprocessed to sigma0. Other required auxiliary data include Water Occurrence Data and LCC maps will be downloaded automatically.
 
 ### Running template
+Please check the file `submit_script.sh` for an example. It is designed to be used by `sbatch` command for a Slurm scheduler.
 ```
-python -u RAPID.py 'S1A_IW_GRDH_1SDV_20220501T001528_20220501T001603_043010_05229E_121A/Sigma0_VV.tif' 'S1A_IW_GRDH_1SDV_20220501T001528_20220501T001603_043010_05229E_121A/Sigma0_VH.tif' ./OUTPUT
-```
-or
-```
-python -u RAPID.py ./config.json
+sbatch submit_script.sh
 ```
 
+
 ## Output
-1. 'TempPol_VV/Cat_init_VV.tif': Result of classification of the VV polarization.
-2. 'TempPol_VH/Cat_init_VH.tif': Result of classification of the VH polarization.
-3. 'Morph/Morph_final.tif': Final result after the morphological process
+1. `TempPol_VV/Cat_init_VV.tif`: Result of classification of the VV polarization.
+2. `TempPol_VH/Cat_init_VH.tif`: Result of classification of the VH polarization.
+3. `Morph/Morph_final.tif`: Final result after the morphological process
+4. `quicklook.png` and `quicklook_map.png`: An overview of the final result with LCC map, Google Earth map, and the original SAR as reference.
+
 
 ## Reference
 1. Xinyi Shen, et al. (2019), Nearreal-time non-obstructed flood inundation mapping using synthetic aperture radar. Remote Sens. Environ., 221, 302–315, https://doi.org/10.1016/j.rse.2018.11.008.
