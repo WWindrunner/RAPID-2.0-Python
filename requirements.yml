@@ -45,11 +45,11 @@ dependencies:
   - bzip2=1.0.8
   - c-ares=1.34.3
   - c-blosc2=2.15.2
-  - ca-certificates=2026.2.25
+  - ca-certificates=2026.4.22
   - cached-property=1.5.2
   - cached_property=1.5.2
   - cairo=1.18.0
-  - certifi=2026.2.25
+  - certifi=2026.4.22
   - cffi=1.17.1
   - charls=2.4.2
   - charset-normalizer=3.4.0
@@ -59,6 +59,7 @@ dependencies:
   - cloudpickle=3.1.0
   - colorama=0.4.6
   - comm=0.2.2
+  - contextily=1.7.0
   - contourpy=1.3.1
   - cycler=0.12.1
   - cyrus-sasl=2.1.27
@@ -92,6 +93,8 @@ dependencies:
   - freexl=2.0.0
   - fsspec=2024.10.0
   - gdal=3.10.0
+  - geographiclib=2.1
+  - geopy=2.4.1
   - geos=3.13.0
   - geotiff=1.7.3
   - gflags=2.2.2
@@ -235,6 +238,7 @@ dependencies:
   - matplotlib=3.9.3
   - matplotlib-base=3.9.3
   - matplotlib-inline=0.1.7
+  - mercantile=1.2.1
   - minizip=4.0.7
   - mistune=3.0.2
   - msgpack-python=1.1.0
@@ -254,7 +258,7 @@ dependencies:
   - numpy=2.0.2
   - openjpeg=2.5.2
   - openldap=2.6.9
-  - openssl=3.6.1
+  - openssl=3.6.2
   - orc=2.0.3
   - overrides=7.7.0
   - packaging=24.2
