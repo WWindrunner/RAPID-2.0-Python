@@ -29,14 +29,36 @@ conda env create -f requirements.yml
 ```
 python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder>
 ```
-This will run RAPID in single mode with direct input from command line. Note that by default the first input file should be cross polarization (VV or HH).
+This will run RAPID in single scene mode with direct input from command line. Note that by default the first input file should be co-polarization (VV or HH).
 ```
 python -u RAPID.py <PATH_JSON>
 ```
 This will run RAPID with the input parameters that specified in <PATH_JSON>.
 
 ### config.json
-Specify input files, output folder, and parameters in .json file.
+Specify input files, output folder, and parameters in .json file. 
+
+As shown here, multiple file inputs are supported but not fully tested.
+```
+"filepath_list": [
+    [
+      "/path/to/scene_001/Sigma0_VV.tif",
+      "/path/to/scene_001/Sigma0_VH.tif"
+    ],
+    [
+      "/path/to/scene_002/Sigma0_VV.tif",
+      "/path/to/scene_002/Sigma0_VH.tif"
+    ]
+  ],
+```
+`granules` specifies the output folder name. If left empty, it will be extracted from the input path.
+```
+"granules": [
+    "scene_001",
+    "scene_002"
+  ],
+```
+Except the input path and output path, most other parameters will affect the algorithm result and should not be modified at will.
 
 ### Data input requirements
 SAR Data in GeoTIFF format, without speckle filter, preprocessed to sigma0. Other required auxiliary data include Water Occurrence Data and LCC maps will be downloaded automatically.
@@ -58,3 +80,6 @@ sbatch submit_script.sh
 ## Reference
 1. Xinyi Shen, et al. (2019), Nearreal-time non-obstructed flood inundation mapping using synthetic aperture radar. Remote Sens. Environ., 221, 302–315, https://doi.org/10.1016/j.rse.2018.11.008.
 2. Qing Yang, et al. (2021), A high-resolution flood inundation archive (2016–the present) from sentinel-1 SAR imagery over CONUS. Bull. Amer. Meteor. Soc., 102, E1064–E1079, https://doi.org/10.1175/BAMS-D-19-0319.1.
+
+## Contact
+Maopu Xu`maopuxu@uwm.edu`
