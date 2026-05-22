@@ -212,57 +212,69 @@ def Load_Data(args):
     #
     ds = set_nan(ds, args)
     ds = normalize_inc(ds)
-    if args.MODE != 'desert':  # No ancillary data is needed in the desert mode.
-        # water occurrence file
-        if wotif == None:
-            if args.datamode == 'mem':
-                setattr(ds, 'water_occurrence',
-                        AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getWO().squeeze())
-                # args.tempfiles = None
-            else:
-                tempfileWO = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getWO()
-                setattr(ds, 'water_occurrence', readhdf(tempfileWO.name, args.chunks).squeeze())
-                args.tempfiles.append(tempfileWO)
-        else:
-            setattr(ds, 'water_occurrence', readfileio(wotif, args.chunks))
-            # args.tempfiles = None
 
-        # align chunks before combining arrays, to avoid repeated rechunk-merge graphs later
-        if hasattr(ds.water_occurrence, "rechunk"):
-            ds.water_occurrence = ds.water_occurrence.rechunk(ds.img_lp.chunks)
-
-        if hasattr(ds.img_cp, "rechunk") and ds.img_cp.chunks != ds.img_lp.chunks:
-            ds.img_cp = ds.img_cp.rechunk(ds.img_lp.chunks)
-
-        mask_wo = ds.water_occurrence > 100
-        zero_lp = da.zeros_like(ds.img_lp)
-        zero_cp = da.zeros_like(ds.img_cp)
-
-        ds.img_lp = da.where(mask_wo, zero_lp, ds.img_lp)
-        ds.img_cp = da.where(mask_wo, zero_cp, ds.img_cp)
-
-        # land cover file
-        if LCCtif == None:
-            if args.datamode == 'mem':
-                setattr(ds, 'land_cover', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLCC().squeeze())
-                # args.tempfiles = None
-            else:
-                tempfileWO = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLCC()
-                setattr(ds, 'land_cover', readhdf(tempfileWO.name, args.chunks).squeeze())
-                args.tempfiles.append(tempfileWO)
-        else:
-            setattr(ds, 'land_cover', readfileio(wotif, args.chunks))
-            # args.tempfiles = None
-        # Convert ESA LCC to GP LCC
-        # ds.land_cover = ESALCC2GPLCC(ds.land_cover)
-
-        # ocean mask file
+    # water occurrence file
+    if wotif == None:
         if args.datamode == 'mem':
-            setattr(ds, 'ocean_mask', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getOceanMask().squeeze())
+            setattr(ds, 'water_occurrence',
+                    AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getWO().squeeze())
+            # args.tempfiles = None
         else:
-            tempfileOM = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getOceanMask()
-            setattr(ds, 'ocean_mask', readhdf(tempfileOM.name, args.chunks).squeeze())
-            args.tempfiles.append(tempfileOM)
+            tempfileWO = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getWO()
+            setattr(ds, 'water_occurrence', readhdf(tempfileWO.name, args.chunks).squeeze())
+            args.tempfiles.append(tempfileWO)
+    else:
+        setattr(ds, 'water_occurrence', readfileio(wotif, args.chunks))
+        # args.tempfiles = None
+
+    # align chunks before combining arrays, to avoid repeated rechunk-merge graphs later
+    if hasattr(ds.water_occurrence, "rechunk"):
+        ds.water_occurrence = ds.water_occurrence.rechunk(ds.img_lp.chunks)
+
+    if hasattr(ds.img_cp, "rechunk") and ds.img_cp.chunks != ds.img_lp.chunks:
+        ds.img_cp = ds.img_cp.rechunk(ds.img_lp.chunks)
+
+    mask_wo = ds.water_occurrence > 100
+    zero_lp = da.zeros_like(ds.img_lp)
+    zero_cp = da.zeros_like(ds.img_cp)
+
+    ds.img_lp = da.where(mask_wo, zero_lp, ds.img_lp)
+    ds.img_cp = da.where(mask_wo, zero_cp, ds.img_cp)
+
+    # land cover file
+    if LCCtif == None:
+        if args.datamode == 'mem':
+            setattr(ds, 'land_cover', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLCC().squeeze())
+        else:
+            tempfileWO = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLCC()
+            setattr(ds, 'land_cover', readhdf(tempfileWO.name, args.chunks).squeeze())
+            args.tempfiles.append(tempfileWO)
+    else:
+        setattr(ds, 'land_cover', readfileio(wotif, args.chunks))
+        # args.tempfiles = None
+    # Convert ESA LCC to GP LCC
+    # ds.land_cover = ESALCC2GPLCC(ds.land_cover)
+
+    # ocean mask file
+    if args.datamode == 'mem':
+        setattr(ds, 'ocean_mask', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getOceanMask().squeeze())
+    else:
+        tempfileOM = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getOceanMask()
+        setattr(ds, 'ocean_mask', readhdf(tempfileOM.name, args.chunks).squeeze())
+        args.tempfiles.append(tempfileOM)
+
+    # DEM file
+    if getattr(args, "use_dem", True):
+        if args.datamode == 'mem':
+            setattr(ds, 'dem',
+                    AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getDEM().squeeze())
+        else:
+            tempfileDEM = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getDEM()
+            setattr(ds, 'dem', readhdf(tempfileDEM.name, args.chunks).squeeze())
+            args.tempfiles.append(tempfileDEM)
+
+        if hasattr(ds.dem, "rechunk"):
+            ds.dem = ds.dem.rechunk(ds.img_lp.chunks)
 
     del ds.inc
 

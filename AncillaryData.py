@@ -281,18 +281,20 @@ class AncillaryData():
         merged_resandclip = self.merge_res(elements)
         return merged_resandclip
 
+    @staticmethod
     def glo30list(bounds: tuple) -> list:
         """
-        Get the intersect copernicus glo30 data file list based on bounds and offical geojson
+        Get intersecting Copernicus GLO-30 DEM files based on bounds in EPSG:4326.
         """
-        # Open the geojson file
         DEM_GEOJSON = '/vsicurl/https://asf-dem-west.s3.amazonaws.com/v2/cop30-2021.geojson'
+
         dataSource = ogr.Open(DEM_GEOJSON)
+        if dataSource is None:
+            raise RuntimeError(f"Failed to open DEM geojson: {DEM_GEOJSON}")
+
         layer = dataSource.GetLayer()
-        # Create an OGR geometry object from the bounds
-        # Create an empty polygon
+
         extent_geom = ogr.Geometry(ogr.wkbPolygon)
-        # Add the vertices of the bounding box
         ring = ogr.Geometry(ogr.wkbLinearRing)
         ring.AddPoint(bounds[0], bounds[1])
         ring.AddPoint(bounds[2], bounds[1])
@@ -300,17 +302,31 @@ class AncillaryData():
         ring.AddPoint(bounds[0], bounds[3])
         ring.AddPoint(bounds[0], bounds[1])
         extent_geom.AddGeometry(ring)
-        # Loop over features and find intersecting features
+
         elements = []
         for feature in layer:
             geom = feature.GetGeometryRef()
-            if extent_geom.Intersects(geom):
+            if geom is not None and extent_geom.Intersects(geom):
                 file_path = feature.GetField('file_path')
                 print(file_path)
                 elements.append(file_path)
-        # Close the data source
+
         dataSource = None
+
+        if len(elements) == 0:
+            raise RuntimeError(f"No Copernicus GLO-30 DEM tile found for bounds: {bounds}")
+
         return elements
+
+    @tim
+    def getDEM(self):
+        """
+        Get Copernicus GLO-30 DEM based on reference image bounds.
+        Merge, reproject, resample, and clip to the reference grid.
+        """
+        dem_files = self.glo30list(self.bounds)
+        dem = self.merge_res(dem_files)
+        return dem
 
     def merge_res(self, rasterfiles):
         """
