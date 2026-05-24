@@ -263,18 +263,64 @@ def Load_Data(args):
         setattr(ds, 'ocean_mask', readhdf(tempfileOM.name, args.chunks).squeeze())
         args.tempfiles.append(tempfileOM)
 
-    # DEM file
-    if getattr(args, "use_dem", True):
-        if args.datamode == 'mem':
-            setattr(ds, 'dem',
-                    AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getDEM().squeeze())
-        else:
-            tempfileDEM = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getDEM()
-            setattr(ds, 'dem', readhdf(tempfileDEM.name, args.chunks).squeeze())
-            args.tempfiles.append(tempfileDEM)
+    # terrain exclusion ancillary data
+    # Priority:
+    # 1) user-provided terrain_mask_path
+    # 2) user-provided slope_path
+    # 3) DEM-derived terrain mask, experimental
+    # 4) skip terrain exclusion
+    ds.terrain_mask = None
+    ds.slope = None
 
-        if hasattr(ds.dem, "rechunk"):
-            ds.dem = ds.dem.rechunk(ds.img_lp.chunks)
+    terrain_mask_path = getattr(args, "terrain_mask_path", None)
+    slope_path = getattr(args, "slope_path", None)
+    use_dem = getattr(args, "use_dem", False)
+
+    # ---- 1) existing terrain mask ----
+    if terrain_mask_path is not None:
+        print(f"[Load_Data] reading terrain mask: {terrain_mask_path}", flush=True)
+        ds.terrain_mask = readfileio(terrain_mask_path, args.chunks)
+
+        if hasattr(ds.terrain_mask, "rechunk"):
+            ds.terrain_mask = ds.terrain_mask.rechunk(ds.img_lp.chunks)
+
+    # ---- 2) existing slope raster ----
+    elif slope_path is not None:
+        print(f"[Load_Data] reading slope raster: {slope_path}", flush=True)
+        ds.slope = readfileio(slope_path, args.chunks)
+
+        if hasattr(ds.slope, "rechunk"):
+            ds.slope = ds.slope.rechunk(ds.img_lp.chunks)
+
+    # ---- 3) DEM-derived terrain mask, experimental ----
+    elif use_dem:
+        print("[Load_Data] preparing DEM-derived terrain mask", flush=True)
+
+        if args.datamode == 'mem':
+            ds.terrain_mask = (
+                AncillaryData(ref=infilepath[0], chunk_size=args.chunks)
+                .getTerrainMask(
+                    slope_th=getattr(args, "terrain_slope_th", 20.0),
+                    dem_res=getattr(args, "dem_res", 90.0),
+                )
+                .squeeze()
+            )
+        else:
+            tempfileTerrain = (
+                AncillaryData(ref=infilepath[0], chunk_size=args.chunks, datamode=args.datamode)
+                .getTerrainMask(
+                    slope_th=getattr(args, "terrain_slope_th", 20.0),
+                    dem_res=getattr(args, "dem_res", 90.0),
+                )
+            )
+            ds.terrain_mask = readhdf(tempfileTerrain.name, args.chunks).squeeze()
+            args.tempfiles.append(tempfileTerrain)
+
+        if hasattr(ds.terrain_mask, "rechunk"):
+            ds.terrain_mask = ds.terrain_mask.rechunk(ds.img_lp.chunks)
+
+    else:
+        print("[Load_Data] terrain exclusion disabled", flush=True)
 
     del ds.inc
 

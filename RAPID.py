@@ -45,6 +45,7 @@ def normalize_args(args):
         "Iter", "showDist", "writeSampleMap", "showProg", "showProgress",
         "imported", "optIterAlg", "bInitialized", "bExport",
         "floodimage", "failed", "writeSampleDist", "useSBACache", "resume_morph",
+        "use_dem",
     ]
     for name in bool_fields:
         if hasattr(args, name):
@@ -67,7 +68,7 @@ def normalize_args(args):
         "maxENL", "thKLD", "thNSE", "thR2",
         "distThDist2Mean", "distThAD",
         "morphPreAD", "morphPreRH", "morphPreDist2Mean",
-        "thInund", "rInund", "rProb",
+        "thInund", "rInund", "rProb", "terrain_slope_th", "dem_res",
     ]
     for name in float_fields:
         if hasattr(args, name):
@@ -311,6 +312,24 @@ def parse(config_json=None):
 
     parser.add_argument('--blockSizeMorph', type=int, default=1000,
                         help='Block size for morphology stage. Default 1000.')
+
+    # -----------------------------
+    # terrain exclusion parameters
+    # -----------------------------
+    parser.add_argument('--use_dem', action='store_true', default=False,
+                        help='Enable DEM-derived terrain exclusion mask generation. Experimental. Default disabled.')
+
+    parser.add_argument('--terrain_mask_path', type=str, default=None,
+                        help='Optional terrain exclusion mask raster path. Highest priority if provided.')
+
+    parser.add_argument('--slope_path', type=str, default=None,
+                        help='Optional precomputed slope raster path (degree). Used if terrain_mask_path is not provided.')
+
+    parser.add_argument('--terrain_slope_th', type=float, default=20.0,
+                        help='Slope threshold in degrees for terrain exclusion. Default 20.0.')
+
+    parser.add_argument('--dem_res', type=float, default=90.0,
+                        help='DEM processing resolution in meters for terrain mask generation. Larger values are faster and use less memory. Default 90.0.')
 
     # ---- current workflow / io ----
     parser.add_argument('--OUT_PATH', type=str, default='.')

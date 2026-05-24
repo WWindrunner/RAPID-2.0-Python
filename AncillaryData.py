@@ -8,9 +8,12 @@ import dask
 import dask.array as da
 from dask import delayed, compute
 from osgeo import ogr
+from rasterio.transform import Affine
+import tempfile
+import subprocess
 
 
-class AncillaryData():
+class AncillaryData:
     """
     Get ancillary data from the fly, based on the geometry and size of input xarray.
 
@@ -327,6 +330,186 @@ class AncillaryData():
         dem_files = self.glo30list(self.bounds)
         dem = self.merge_res(dem_files)
         return dem
+
+    @tim
+    def getTerrainMask(self, slope_th=20.0, dem_res=90.0):
+        """
+        Generate DEM-derived terrain exclusion mask.
+
+        This function does NOT return DEM.
+        It only returns a 0/1 terrain mask aligned to the reference SAR grid.
+
+        1 = terrain area to exclude
+        0 = keep
+
+        Parameters
+        ----------
+        slope_th : float
+            Slope threshold in degrees.
+        dem_res : float
+            Coarse DEM processing resolution in meters.
+
+        Returns
+        -------
+        dask array or tempfile
+            Terrain exclusion mask aligned with reference image.
+        """
+
+        dem_files = self.glo30list(self.bounds)
+
+        tmpdir = tempfile.mkdtemp(prefix="rapid_dem_")
+
+        tile_list_txt = os.path.join(tmpdir, "dem_tiles.txt")
+        dem_vrt = os.path.join(tmpdir, "dem.vrt")
+        dem_coarse_tif = os.path.join(tmpdir, "dem_coarse.tif")
+        terrain_coarse_tif = os.path.join(tmpdir, "terrain_mask_coarse.tif")
+        terrain_ref_tif = os.path.join(tmpdir, "terrain_mask_ref.tif")
+
+        with open(tile_list_txt, "w") as f:
+            for p in dem_files:
+                f.write(p + "\n")
+
+        # ---- reference metadata ----
+        if isinstance(self.ref, str):
+            with rasterio.open(self.ref) as ref:
+                ref_crs = ref.crs
+                ref_transform = ref.transform
+                ref_bounds = ref.bounds
+                ref_width = ref.width
+                ref_height = ref.height
+                ref_meta = ref.meta.copy()
+        else:
+            ref = self.ref
+            ref_crs = ref.crs
+            ref_transform = ref.transform
+            ref_bounds = ref.bounds
+            ref_width = ref.width
+            ref_height = ref.height
+            ref_meta = ref.meta.copy()
+
+        # ---- build DEM VRT ----
+        cmd_vrt = [
+            "gdalbuildvrt",
+            "-input_file_list", tile_list_txt,
+            dem_vrt
+        ]
+        subprocess.run(cmd_vrt, check=True)
+
+        # ---- choose coarse resolution in reference CRS units ----
+        if ref_crs.is_geographic:
+            # dem_res is meters; convert to approximate degree spacing.
+            center_lat = (ref_bounds.bottom + ref_bounds.top) / 2.0
+
+            meters_per_deg_lat = 111320.0
+            meters_per_deg_lon = 111320.0 * np.cos(np.deg2rad(center_lat))
+
+            xres = dem_res / meters_per_deg_lon
+            yres = dem_res / meters_per_deg_lat
+        else:
+            # projected CRS, usually meters
+            xres = dem_res
+            yres = dem_res
+
+        # ---- warp DEM to coarse reference CRS / extent ----
+        cmd_warp_dem = [
+            "gdalwarp",
+            "-overwrite",
+            "-t_srs", ref_crs.to_string(),
+            "-te",
+            str(ref_bounds.left),
+            str(ref_bounds.bottom),
+            str(ref_bounds.right),
+            str(ref_bounds.top),
+            "-tr", str(xres), str(yres),
+            "-r", "bilinear",
+            "-dstnodata", "-9999",
+            "-co", "COMPRESS=DEFLATE",
+            "-co", "TILED=YES",
+            dem_vrt,
+            dem_coarse_tif
+        ]
+        subprocess.run(cmd_warp_dem, check=True)
+
+        # ---- calculate slope on coarse DEM ----
+        with rasterio.open(dem_coarse_tif) as src:
+            dem = src.read(1).astype(np.float32)
+            dem_transform = src.transform
+            dem_crs = src.crs
+            dem_nodata = src.nodata
+            dem_profile = src.profile.copy()
+
+        if dem_nodata is not None:
+            dem[dem == dem_nodata] = np.nan
+
+        dx = abs(dem_transform.a)
+        dy = abs(dem_transform.e)
+
+        if dem_crs.is_geographic:
+            nrows = dem.shape[0]
+            center_lat = dem_transform.f + dem_transform.e * (nrows / 2.0)
+
+            meters_per_deg_lat = 111320.0
+            meters_per_deg_lon = 111320.0 * np.cos(np.deg2rad(center_lat))
+
+            dx = dx * meters_per_deg_lon
+            dy = dy * meters_per_deg_lat
+
+        dzdy, dzdx = np.gradient(dem, dy, dx)
+        slope_rad = np.arctan(np.sqrt(dzdx ** 2 + dzdy ** 2))
+        slope_deg = np.rad2deg(slope_rad)
+
+        terrain_mask = (
+                np.isfinite(slope_deg)
+                & (slope_deg > slope_th)
+        ).astype(np.uint8)
+
+        # ---- write coarse terrain mask ----
+        dem_profile.update(
+            dtype="uint8",
+            count=1,
+            nodata=0,
+            compress="deflate",
+            tiled=True
+        )
+
+        with rasterio.open(terrain_coarse_tif, "w", **dem_profile) as dst:
+            dst.write(terrain_mask, 1)
+
+        # ---- warp terrain mask back to exact SAR grid ----
+        cmd_warp_mask = [
+            "gdalwarp",
+            "-overwrite",
+            "-t_srs", ref_crs.to_string(),
+            "-te",
+            str(ref_bounds.left),
+            str(ref_bounds.bottom),
+            str(ref_bounds.right),
+            str(ref_bounds.top),
+            "-ts", str(ref_width), str(ref_height),
+            "-r", "near",
+            "-dstnodata", "0",
+            "-co", "COMPRESS=DEFLATE",
+            "-co", "TILED=YES",
+            terrain_coarse_tif,
+            terrain_ref_tif
+        ]
+        subprocess.run(cmd_warp_mask, check=True)
+
+        # ---- return in the same style as other ancillary data ----
+        if self.datamode == "mem":
+            with rasterio.open(terrain_ref_tif) as src:
+                arr = src.read(1).astype(np.uint8)
+
+            temp = da.from_array(arr, chunks=self.chunk_size)
+
+        else:
+            temp = tempfile.NamedTemporaryFile()
+            with rasterio.open(terrain_ref_tif) as src:
+                arr = src.read(1).astype(np.uint8)
+
+            da.to_hdf5(temp.name, "/merged_array_raw", da.from_array(arr, chunks=self.chunk_size))
+
+        return temp
 
     def merge_res(self, rasterfiles):
         """
