@@ -247,38 +247,23 @@ def quicklook(fileMorphOut, ds, args, out_png=None, scene_name=None):
     """
     Create a quicklook PNG with:
       left  = land cover
-      right = VV SAR background + morph overlay
+      right = SAR + RAPID result
 
-    Parameters
-    ----------
-    fileMorphOut : str
-        Path to final morph GeoTIFF.
-    ds : object
-        Dataset object from Load_Data, must contain:
-          - ds.land_cover
-          - ds.img_lp
-    args : object
-        Args object from Load_Data, should contain transform/refmeta.
-    out_png : str or None
-        Output png path. Default: same folder as fileMorphOut, named quicklook.png
-    scene_name : str or None
-        Optional title for the figure.
+    Spatial extent is based on fileMorphOut.
     """
     if out_png is None:
         out_png = os.path.join(os.path.dirname(fileMorphOut), "quicklook.png")
 
-    # read morph from file to ensure final saved output is what we show
+    # read morph with preview transform
     with rasterio.open(fileMorphOut) as src:
-        morph = src.read(1)
-        transform = src.transform
-        h, w = morph.shape
+        morph, morph_transform = _read_raster_preview_with_transform(src, max_dim=1800)
+        morph_crs = src.crs
 
     # preview arrays
-    lcc = _to_numpy_preview(ds.land_cover)
-    sar = _to_numpy_preview(ds.img_lp)
-    morph = _to_numpy_preview(morph)
+    lcc = _to_numpy_preview(ds.land_cover, max_dim=1800)
+    sar = _to_numpy_preview(ds.img_lp, max_dim=1800)
 
-    # ensure same preview shape
+    # force same plotting shape
     min_h = min(lcc.shape[0], sar.shape[0], morph.shape[0])
     min_w = min(lcc.shape[1], sar.shape[1], morph.shape[1])
 
@@ -286,15 +271,20 @@ def quicklook(fileMorphOut, ds, args, out_png=None, scene_name=None):
     sar = sar[:min_h, :min_w]
     morph = morph[:min_h, :min_w]
 
-    # build extent using args if available, otherwise fallback to morph transform
-    if hasattr(args, "transform") and args.transform is not None:
-        extent = _extent_from_args(args, (min_h, min_w))
+    # use morph output transform as the only spatial reference
+    xmin = morph_transform.c
+    ymax = morph_transform.f
+    xmax = xmin + min_w * morph_transform.a
+    ymin = ymax + min_h * morph_transform.e
+    extent = [xmin, xmax, ymin, ymax]
+
+    # optional CRS-based axis labels
+    if morph_crs is not None and morph_crs.is_geographic:
+        xlabel = "Longitude"
+        ylabel = "Latitude"
     else:
-        xmin = transform.c
-        ymax = transform.f
-        xmax = xmin + min_w * transform.a
-        ymin = ymax + min_h * transform.e
-        extent = [xmin, xmax, ymin, ymax]
+        xlabel = "X"
+        ylabel = "Y"
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
     fig.patch.set_facecolor("white")
@@ -304,13 +294,20 @@ def quicklook(fileMorphOut, ds, args, out_png=None, scene_name=None):
     _plot_lcc(axes[0], lcc, extent=extent)
     _plot_sar_with_result(axes[1], sar, morph, extent=extent)
 
+    for ax in axes:
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+
     title = scene_name if scene_name is not None else os.path.basename(os.path.dirname(fileMorphOut))
     fig.suptitle(title, fontsize=14)
 
     plt.savefig(out_png, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
+    print(f"[quicklook] crs: {morph_crs}")
+    print(f"[quicklook] extent: {extent}")
     print(f"[quicklook] saved: {out_png}")
+
     return out_png
 
 
@@ -354,26 +351,21 @@ def quicklook_map(fileMorphOut, ds, args, out_png=None, scene_name=None):
     # =========================
     # LCC preview
     # =========================
-    lcc = _to_numpy_preview(ds.land_cover)
+    lcc = _to_numpy_preview(ds.land_cover, max_dim=1800)
 
-    # LCC extent: 如果 args.transform 是原始分辨率，这里也要按 preview 修正
-    if hasattr(args, "transform") and args.transform is not None:
-        full_h = getattr(args, "height", lcc.shape[0])
-        full_w = getattr(args, "width", lcc.shape[1])
+    # force same plotting size
+    min_h = min(lcc.shape[0], morph.shape[0])
+    min_w = min(lcc.shape[1], morph.shape[1])
 
-        preview_h, preview_w = lcc.shape
-        lcc_transform = args.transform * args.transform.scale(
-            full_w / preview_w,
-            full_h / preview_h
-        )
+    lcc = lcc[:min_h, :min_w]
 
-        xmin_lcc = lcc_transform.c
-        ymax_lcc = lcc_transform.f
-        xmax_lcc = xmin_lcc + preview_w * lcc_transform.a
-        ymin_lcc = ymax_lcc + preview_h * lcc_transform.e
-        extent_lcc = [xmin_lcc, xmax_lcc, ymin_lcc, ymax_lcc]
-    else:
-        extent_lcc = None
+    # use morph transform as the ONLY spatial reference
+    xmin_lcc = morph_transform.c
+    ymax_lcc = morph_transform.f
+    xmax_lcc = xmin_lcc + min_w * morph_transform.a
+    ymin_lcc = ymax_lcc + min_h * morph_transform.e
+
+    extent_lcc = [xmin_lcc, xmax_lcc, ymin_lcc, ymax_lcc]
 
     # =========================
     # Plot
@@ -426,7 +418,12 @@ def quicklook_map(fileMorphOut, ds, args, out_png=None, scene_name=None):
     )
 
     ax.set_title("Flood map (basemap)")
-    ax.set_axis_off()
+    if morph_crs is not None and morph_crs.is_geographic:
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+    else:
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
 
     handles = [
         Patch(facecolor=colors[1], edgecolor="black", label="Permanent"),
