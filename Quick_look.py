@@ -6,6 +6,7 @@ from matplotlib.patches import Patch
 import rasterio
 import contextily as ctx
 from rasterio.warp import calculate_default_transform, reproject, Resampling
+from scipy.ndimage import zoom
 
 
 def _read_raster_preview_with_transform(src, max_dim=1800):
@@ -89,6 +90,13 @@ def _to_numpy_preview(arr, max_dim=1800):
         arr = arr[::step, ::step]
 
     return arr
+
+
+def _resize_to_shape(arr, target_shape, order=0):
+    zoom_y = target_shape[0] / arr.shape[0]
+    zoom_x = target_shape[1] / arr.shape[1]
+    out = zoom(arr, (zoom_y, zoom_x), order=order)
+    return out[:target_shape[0], :target_shape[1]]
 
 
 def _extent_from_args(args, shape):
@@ -258,24 +266,32 @@ def quicklook(fileMorphOut, ds, args, out_png=None, scene_name=None):
     with rasterio.open(fileMorphOut) as src:
         morph, morph_transform = _read_raster_preview_with_transform(src, max_dim=1800)
         morph_crs = src.crs
+        morph_nodata = src.nodata
+
+    if morph_nodata is not None:
+        morph = np.where(morph == morph_nodata, 0, morph)
+
+    morph = np.where(np.isin(morph, [1, 2, 3, 4, 5]), morph, 0).astype(np.uint8)
 
     # preview arrays
-    lcc = _to_numpy_preview(ds.land_cover, max_dim=1800)
-    sar = _to_numpy_preview(ds.img_lp, max_dim=1800)
+    target_shape = morph.shape
 
-    # force same plotting shape
-    min_h = min(lcc.shape[0], sar.shape[0], morph.shape[0])
-    min_w = min(lcc.shape[1], sar.shape[1], morph.shape[1])
+    lcc = _to_numpy_preview(ds.land_cover, max_dim=max(target_shape))
+    sar = _to_numpy_preview(ds.img_lp, max_dim=max(target_shape))
 
-    lcc = lcc[:min_h, :min_w]
-    sar = sar[:min_h, :min_w]
-    morph = morph[:min_h, :min_w]
+    # force LCC / SAR to exactly match morph preview shape
+    if lcc.shape != target_shape:
+        lcc = _resize_to_shape(lcc, target_shape, order=0).astype(lcc.dtype)
+
+    if sar.shape != target_shape:
+        sar = _resize_to_shape(sar, target_shape, order=1).astype(np.float32)
 
     # use morph output transform as the only spatial reference
+    h, w = morph.shape
     xmin = morph_transform.c
     ymax = morph_transform.f
-    xmax = xmin + min_w * morph_transform.a
-    ymin = ymax + min_h * morph_transform.e
+    xmax = xmin + w * morph_transform.a
+    ymin = ymax + h * morph_transform.e
     extent = [xmin, xmax, ymin, ymax]
 
     # optional CRS-based axis labels
@@ -327,6 +343,12 @@ def quicklook_map(fileMorphOut, ds, args, out_png=None, scene_name=None):
     with rasterio.open(fileMorphOut) as src:
         morph, morph_transform = _read_raster_preview_with_transform(src, max_dim=1800)
         morph_crs = src.crs
+        morph_nodata = src.nodata
+
+    if morph_nodata is not None:
+        morph = np.where(morph == morph_nodata, 0, morph)
+
+    morph = np.where(np.isin(morph, [1, 2, 3, 4, 5]), morph, 0).astype(np.uint8)
 
     if morph_crs is None:
         print("[quicklook_map] morph CRS is None, skip basemap quicklook.")
@@ -351,20 +373,19 @@ def quicklook_map(fileMorphOut, ds, args, out_png=None, scene_name=None):
     # =========================
     # LCC preview
     # =========================
-    lcc = _to_numpy_preview(ds.land_cover, max_dim=1800)
+    target_shape = morph.shape
 
-    # force same plotting size
-    min_h = min(lcc.shape[0], morph.shape[0])
-    min_w = min(lcc.shape[1], morph.shape[1])
+    lcc = _to_numpy_preview(ds.land_cover, max_dim=max(target_shape))
 
-    lcc = lcc[:min_h, :min_w]
+    if lcc.shape != target_shape:
+        lcc = _resize_to_shape(lcc, target_shape, order=0).astype(lcc.dtype)
 
     # use morph transform as the ONLY spatial reference
+    h, w = morph.shape
     xmin_lcc = morph_transform.c
     ymax_lcc = morph_transform.f
-    xmax_lcc = xmin_lcc + min_w * morph_transform.a
-    ymin_lcc = ymax_lcc + min_h * morph_transform.e
-
+    xmax_lcc = xmin_lcc + w * morph_transform.a
+    ymin_lcc = ymax_lcc + h * morph_transform.e
     extent_lcc = [xmin_lcc, xmax_lcc, ymin_lcc, ymax_lcc]
 
     # =========================
@@ -418,12 +439,7 @@ def quicklook_map(fileMorphOut, ds, args, out_png=None, scene_name=None):
     )
 
     ax.set_title("Flood map (basemap)")
-    if morph_crs is not None and morph_crs.is_geographic:
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Latitude")
-    else:
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
+    ax.set_axis_off()
 
     handles = [
         Patch(facecolor=colors[1], edgecolor="black", label="Permanent"),
