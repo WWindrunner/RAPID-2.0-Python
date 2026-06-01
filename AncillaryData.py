@@ -251,6 +251,32 @@ class AncillaryData:
         # --------------------------------------------------
         return self.merge_res([ocean_tif])
 
+    @tim
+    def getSlope(self, slopefile):
+        """
+        Get user-provided terrain angle raster, such as local incidence angle
+        or DEM-derived slope, and align it to the reference SAR grid.
+
+        Parameters
+        ----------
+        slopefile : str
+            Path to local incidence angle / slope raster.
+
+        Returns
+        -------
+        Dask array or tempfile
+            Terrain angle raster aligned to the reference image.
+        """
+
+        print(slopefile)
+
+        merged_resandclip = self.merge_res(
+            [slopefile],
+            resampling=rasterio.warp.Resampling.bilinear
+        )
+
+        return merged_resandclip
+
     def getLCC_ori(self):
         """
         Get land cover data from GongPeng LCC, based on the geobounds of reference tif or src.
@@ -320,16 +346,6 @@ class AncillaryData:
             raise RuntimeError(f"No Copernicus GLO-30 DEM tile found for bounds: {bounds}")
 
         return elements
-
-    @tim
-    def getDEM(self):
-        """
-        Get Copernicus GLO-30 DEM based on reference image bounds.
-        Merge, reproject, resample, and clip to the reference grid.
-        """
-        dem_files = self.glo30list(self.bounds)
-        dem = self.merge_res(dem_files)
-        return dem
 
     @tim
     def getTerrainMask(self, slope_th=20.0, dem_res=90.0):
@@ -511,47 +527,54 @@ class AncillaryData:
 
         return temp
 
-    def merge_res(self, rasterfiles):
+    def merge_res(self, rasterfiles, resampling=rasterio.warp.Resampling.nearest):
         """
         merge, reproject and resample rasters to the geoextent of reference
-
-        Parameters
-        ----------
-        reffile: reference file path or src of the reference file.
-        rasterfiles: list of raster files to be processed
-        Returns
-        -------
-            dask array
         """
-        # @dask.delayed
-        # def reproject_clip(in_path, refsrc):
-        #    with reproject_raster(in_path, refsrc) as in_mem_ds:
-        #        rc_data = da.from_array(in_mem_ds.read(1), chunks = self.chunk_size)
-        #    return rc_data
+
         reffile = self.ref
         results = []
+
         if isinstance(reffile, str):
-            # input with file path
             with rasterio.open(reffile) as ref:
-                refsrc = ref
+                refsrc = ref.meta.copy()
         else:
-            # input with ref src directly
-            refsrc = reffile
-        refsrc = refsrc.meta.copy()
+            refsrc = reffile.meta.copy()
+
         with rasterio.open(rasterfiles[0]) as src:
             src_dtype = src.dtypes[0]
-        data = [dask.delayed(reproject_clip_readsrc)(url, refsrc) for url in rasterfiles]
+
+        data = [
+            dask.delayed(reproject_clip_readsrc)(
+                url,
+                refsrc,
+                resampling=resampling
+            )
+            for url in rasterfiles
+        ]
+
         results = dask.compute(*data)
-        merged_array_raw = da.nanmax(da.stack(results, axis=0), axis=0).astype(src_dtype).squeeze()
+
+        merged_array_raw = (
+            da.nanmax(da.stack(results, axis=0), axis=0)
+            .astype(src_dtype)
+            .squeeze()
+        )
+
         if self.datamode == 'mem':
-            # save in memory
-            temp = da.from_array(merged_array_raw.compute(), chunks=self.chunk_size)
+            temp = da.from_array(
+                merged_array_raw.compute(),
+                chunks=self.chunk_size
+            )
         else:
-            ##return a temp file instead
             import tempfile
-            # Create a temporary file
             temp = tempfile.NamedTemporaryFile()
-            da.to_hdf5(temp.name, '/merged_array_raw', merged_array_raw)
+            da.to_hdf5(
+                temp.name,
+                '/merged_array_raw',
+                merged_array_raw
+            )
+
         del results, merged_array_raw
         return temp
 

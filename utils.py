@@ -53,17 +53,23 @@ def profile(func):
     return wrapper
 
 
-def reproject_clip_readsrc(in_rasfile, ref):
+def reproject_clip_readsrc(in_rasfile, ref, resampling=rasterio.warp.Resampling.nearest):
     with rasterio.open(in_rasfile) as src:
         in_ras = src.read()
         src_meta = src.meta.copy()
-        out_arr = reproject_clip_direct(in_ras, src_meta, ref)
+        out_arr = reproject_clip_direct(
+            in_ras,
+            src_meta,
+            ref,
+            resampling=resampling
+        )
     return out_arr
 
 
-def reproject_clip_direct(in_ras, src, ref):
+def reproject_clip_direct(in_ras, src, ref, resampling=rasterio.warp.Resampling.nearest):
     dest_shape = (src['count'], ref['height'], ref['width'])
     out_arr = np.zeros(dest_shape, dtype=src['dtype'])
+
     rasterio.warp.reproject(
         source=in_ras,
         destination=out_arr,
@@ -71,10 +77,11 @@ def reproject_clip_direct(in_ras, src, ref):
         src_crs=src['crs'],
         dst_transform=ref['transform'],
         dst_crs=ref['crs'],
-        resampling=rasterio.warp.Resampling.nearest,
+        resampling=resampling,
         src_nodata=src['nodata'],
         dst_nodata=src['nodata'],
     )
+
     return out_arr
 
 

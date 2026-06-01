@@ -286,8 +286,12 @@ def Load_Data(args):
 
     # ---- 2) existing slope raster ----
     elif slope_path is not None:
-        print(f"[Load_Data] reading slope raster: {slope_path}", flush=True)
-        ds.slope = readfileio(slope_path, args.chunks)
+        if args.datamode == 'mem':
+            setattr(ds, 'slope', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getSlope(slope_path).squeeze())
+        else:
+            tempfileSlope = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getSlope(slope_path)
+            setattr(ds, 'slope', readhdf(tempfileSlope.name, args.chunks).squeeze())
+            args.tempfiles.append(tempfileSlope)
 
         if hasattr(ds.slope, "rechunk"):
             ds.slope = ds.slope.rechunk(ds.img_lp.chunks)
