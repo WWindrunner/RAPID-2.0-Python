@@ -655,17 +655,53 @@ def RAPID(*args, **kwargs):
     import logging
     logging.getLogger("distributed.scheduler").setLevel(logging.ERROR)
 
-    if 1 < len(args) <= 4:
+    if len(args) >= 3:
         # terminal input:
         #   python RAPID.py vv.tif vh.tif out_dir
-        # or
-        #   python RAPID.py asf_url out_dir
-        filepath = list(args[:-1])
-        OUT_PATH = args[-1]
+        # optional:
+        #   python RAPID.py vv.tif vh.tif out_dir --slope_path lia.tif --use_dem
+        filepath = [args[0], args[1]]
+        OUT_PATH = args[2]
+        extra_args = list(args[3:])
+
         config_file = None
         args = parse(config_file)
+
         args.OUT_PATH = OUT_PATH
         args.filepath_list = [filepath]
+
+        # parse optional command-line overrides: --key value or --flag
+        i = 0
+        while i < len(extra_args):
+            key = extra_args[i]
+            if not isinstance(key, str) or not key.startswith("--"):
+                raise ValueError(f"Invalid optional argument: {key}")
+
+            key = key[2:]
+
+            # flag argument, e.g. --use_dem
+            if i + 1 >= len(extra_args) or (
+                isinstance(extra_args[i + 1], str)
+                and extra_args[i + 1].startswith("--")
+            ):
+                setattr(args, key, True)
+                i += 1
+            else:
+                val = extra_args[i + 1]
+
+                # cast to existing argument type when possible
+                if hasattr(args, key):
+                    old_val = getattr(args, key)
+                    if isinstance(old_val, bool):
+                        val = str(val).lower() in ["true", "1", "yes", "y"]
+                    elif isinstance(old_val, int):
+                        val = int(val)
+                    elif isinstance(old_val, float):
+                        val = float(val)
+
+                setattr(args, key, val)
+                i += 2
+
     elif len(args) == 1:
         # config / geojson style input
         config_file = args[0]
