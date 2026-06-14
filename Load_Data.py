@@ -263,6 +263,19 @@ def Load_Data(args):
         setattr(ds, 'ocean_mask', readhdf(tempfileOM.name, args.chunks).squeeze())
         args.tempfiles.append(tempfileOM)
 
+    # align chunks
+    if hasattr(ds.ocean_mask, "rechunk"):
+        ds.ocean_mask = ds.ocean_mask.rechunk(ds.img_lp.chunks)
+
+    # save preprocessed / clipped ocean mask
+    save_ancillary_tif(
+        ds.ocean_mask,
+        args,
+        out_name="ocean_mask.tif",
+        dtype="uint8",
+        nodata=255
+    )
+
     # terrain exclusion ancillary data
     # Priority:
     # 1) user-provided terrain_mask_path
@@ -332,3 +345,43 @@ def Load_Data(args):
     # print("img_cp chunks:", getattr(ds.img_cp, "chunks", None))
     # print("water_occurrence chunks:", getattr(ds.water_occurrence, "chunks", None))
     return args, ds
+
+
+def save_ancillary_tif(arr, args, out_name, dtype="uint8", nodata=255):
+    """
+    Save a 2D ancillary raster already aligned to SAR grid.
+
+    arr can be numpy array or dask array.
+    """
+
+    os.makedirs(args.dirOut, exist_ok=True)
+    out_path = os.path.join(args.dirOut, out_name)
+
+    if isinstance(arr, da.Array):
+        arr_out = arr.compute()
+    else:
+        arr_out = arr
+
+    arr_out = np.asarray(arr_out).squeeze()
+
+    # ocean mask / boolean mask: save as 0/1
+    if arr_out.dtype == bool:
+        arr_out = arr_out.astype(np.uint8)
+    else:
+        arr_out = arr_out.astype(dtype)
+
+    meta = args.refmeta.copy()
+    meta.update(
+        driver="GTiff",
+        count=1,
+        dtype=arr_out.dtype,
+        nodata=nodata,
+        compress="lzw"
+    )
+
+    with rasterio.open(out_path, "w", **meta) as dst:
+        dst.write(arr_out, 1)
+
+    print(f"[Load_Data] saved ancillary raster: {out_path}", flush=True)
+    return out_path
+

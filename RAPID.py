@@ -373,7 +373,7 @@ def dup_args(args, filepath, granuele_name, wotif=None):
     args_new.fileThFine_root = os.path.join(args_new.dirTempPol, "ThFine_")
     args_new.fileCatInit = os.path.join(args_new.dirOut, "Cat_init.tif")
 
-    os.makedirs(args_new.dirTempPol, exist_ok=True)
+    # os.makedirs(args_new.dirTempPol, exist_ok=True)
     os.makedirs(args_new.dirOut, exist_ok=True)
 
     if args.blockSize == 'auto':
