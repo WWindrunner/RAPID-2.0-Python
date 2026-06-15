@@ -5,16 +5,11 @@
     [
       "/path/to/scene_001/Sigma0_VV.tif",
       "/path/to/scene_001/Sigma0_VH.tif"
-    ],
-    [
-      "/path/to/scene_002/Sigma0_VV.tif",
-      "/path/to/scene_002/Sigma0_VH.tif"
     ]
   ],
 
   "granules": [
-    "scene_001",
-    "scene_002"
+    "scene_001"
   ],
 
   "blockSize": 1024,

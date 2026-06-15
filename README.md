@@ -26,39 +26,45 @@ conda env create -f requirements.yml
 
 ## Usage
 ### RAPID.py
-```
-python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder>
-```
 This will run RAPID in single scene mode with direct input from command line. Note that by default the first input file should be co-polarization (VV or HH).
+```
+python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> [other possible parameters]
+```
+Without specifying other parameters, the RAPID v2 default mode will NOT apply exclusion masks.
+
+If a terrain/mountain shadow mask is wanted, please run by the `--slope_path` parameter, as shown below.
+```
+python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> --slope_path "path_to_lia" [other possible parameters]
+```
+This will run RAPID with the input parameters that specified in <PATH_JSON>.
 ```
 python -u RAPID.py <PATH_JSON>
 ```
-This will run RAPID with the input parameters that specified in <PATH_JSON>.
 
 ### config.json
 Specify input files, output folder, and parameters in .json file. 
 
-As shown here, multiple file inputs are supported but not fully tested.
+Example of file input is shown here. 
 ```
 "filepath_list": [
     [
       "/path/to/scene_001/Sigma0_VV.tif",
       "/path/to/scene_001/Sigma0_VH.tif"
-    ],
-    [
-      "/path/to/scene_002/Sigma0_VV.tif",
-      "/path/to/scene_002/Sigma0_VH.tif"
     ]
   ],
 ```
 `granules` specifies the output folder name. If left empty, it will be extracted from the input path.
 ```
 "granules": [
-    "scene_001",
-    "scene_002"
+    "scene_001"
   ],
 ```
-Except the input path and output path, most other parameters will affect the algorithm result and should not be modified at will.
+Besides the file paths and granules, other parameters can be added same as the command line mode.
+```
+"slope_path": "S1A_IW_GRDH_1SDV_20251214T141324_20251214T141349_062312_07CD9C_C253_LIA.tif"
+```
+Note that the parameters will affect the running results, and should not be modified at will.
+They can be left empty in the config file, and their default value will be used.
 
 ### Data input requirements
 SAR Data in GeoTIFF format, without speckle filter, preprocessed to sigma0. Other required auxiliary data include Water Occurrence Data and LCC maps will be downloaded automatically.
@@ -70,7 +76,7 @@ sbatch submit_script.sh
 ```
 
 
-## Output
+## Main Output
 1. `TempPol_VV/Cat_init_VV.tif`: Result of classification of the VV polarization.
 2. `TempPol_VH/Cat_init_VH.tif`: Result of classification of the VH polarization.
 3. `Morph/Morph_final.tif`: Final result after the morphological process
