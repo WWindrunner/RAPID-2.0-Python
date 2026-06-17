@@ -165,6 +165,7 @@ class AncillaryData:
         import zipfile
         import tempfile
         import urllib.request
+        import json
         from rasterio.features import rasterize
         from rasterio.transform import from_origin
 
@@ -200,7 +201,10 @@ class AncillaryData:
             geom = feat.GetGeometryRef()
             if geom is None:
                 continue
-            shapes.append((geom.ExportToJson(), 1))
+
+            # rasterio.rasterize needs GeoJSON-like dict, not JSON string
+            geom_json = json.loads(geom.ExportToJson())
+            shapes.append((geom_json, 1))
 
         if len(shapes) == 0:
             raise RuntimeError("No geometries found in ocean shapefile")
@@ -241,7 +245,7 @@ class AncillaryData:
             dtype=np.uint8,
             crs="EPSG:4326",
             transform=transform,
-            nodata=0,
+            nodata=None,
             compress="lzw",
         ) as dst:
             dst.write(mask, 1)
