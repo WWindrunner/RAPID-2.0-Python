@@ -256,27 +256,39 @@ class AncillaryData:
         return self.merge_res([ocean_tif])
 
     @tim
-    def getSlope(self, slopefile):
+    def getLocalRaster(self, rasterfile, resampling="nearest"):
         """
-        Get user-provided terrain angle raster, such as local incidence angle
-        or DEM-derived slope, and align it to the reference SAR grid.
+        Load user-provided local raster and align it to the reference SAR grid.
 
         Parameters
         ----------
-        slopefile : str
-            Path to local incidence angle / slope raster.
+        rasterfile : str
+            Path to local raster.
+
+        resampling : str
+            "nearest" for masks/classes;
+            "bilinear" for continuous variables.
 
         Returns
         -------
         Dask array or tempfile
-            Terrain angle raster aligned to the reference image.
+            Raster aligned to the reference image.
         """
 
-        print(slopefile)
+        print(rasterfile)
+
+        if resampling == "nearest":
+            resampling_method = rasterio.warp.Resampling.nearest
+        elif resampling == "bilinear":
+            resampling_method = rasterio.warp.Resampling.bilinear
+        elif resampling == "cubic":
+            resampling_method = rasterio.warp.Resampling.cubic
+        else:
+            raise ValueError(f"Unsupported resampling method: {resampling}")
 
         merged_resandclip = self.merge_res(
-            [slopefile],
-            resampling=rasterio.warp.Resampling.bilinear
+            [rasterfile],
+            resampling=resampling_method
         )
 
         return merged_resandclip

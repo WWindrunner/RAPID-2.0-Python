@@ -325,8 +325,11 @@ def parse(config_json=None):
     parser.add_argument('--slope_path', type=str, default=None,
                         help='Optional precomputed slope raster path (degree). Used if terrain_mask_path is not provided.')
 
-    parser.add_argument('--terrain_slope_th', type=float, default=20.0,
-                        help='Slope threshold in degrees for terrain exclusion. Default 20.0.')
+    parser.add_argument('--ice_mask_path', type=str, default=None,
+                        help='Optional precomputed ice raster path (binary, 1 for ice).')
+
+    parser.add_argument('--terrain_slope_th', type=float, default=55.0,
+                        help='Slope threshold in degrees for terrain exclusion. Default 55.0.')
 
     parser.add_argument('--dem_res', type=float, default=90.0,
                         help='DEM processing resolution in meters for terrain mask generation. Larger values are faster and use less memory. Default 90.0.')

@@ -300,9 +300,9 @@ def Load_Data(args):
     # ---- 2) existing slope raster ----
     elif slope_path is not None:
         if args.datamode == 'mem':
-            setattr(ds, 'slope', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getSlope(slope_path).squeeze())
+            setattr(ds, 'slope', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLocalRaster(slope_path, resampling="bilinear").squeeze())
         else:
-            tempfileSlope = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getSlope(slope_path)
+            tempfileSlope = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLocalRaster(slope_path, resampling="bilinear")
             setattr(ds, 'slope', readhdf(tempfileSlope.name, args.chunks).squeeze())
             args.tempfiles.append(tempfileSlope)
 
@@ -338,6 +338,45 @@ def Load_Data(args):
 
     else:
         print("[Load_Data] terrain exclusion disabled", flush=True)
+
+    # Snow/ice mask
+    ice_mask_path = getattr(args, "ice_mask_path", None)
+    if ice_mask_path is not None:
+        print(f"[Load_Data] reading ice/snow mask: {ice_mask_path}", flush=True)
+
+        if args.datamode == 'mem':
+            setattr(
+                ds,
+                'ice_mask',
+                AncillaryData(
+                    ref=infilepath[0],
+                    chunk_size=args.chunks
+                ).getLocalRaster(
+                    ice_mask_path,
+                    resampling="nearest"
+                ).squeeze()
+            )
+        else:
+            tempfileIce = (
+                AncillaryData(
+                    ref=infilepath[0],
+                    chunk_size=args.chunks
+                ).getLocalRaster(
+                    ice_mask_path,
+                    resampling="nearest"
+                )
+            )
+
+            setattr(
+                ds,
+                'ice_mask',
+                readhdf(tempfileIce.name, args.chunks).squeeze()
+            )
+
+            args.tempfiles.append(tempfileIce)
+
+        if hasattr(ds.ice_mask, "rechunk"):
+            ds.ice_mask = ds.ice_mask.rechunk(ds.img_lp.chunks)
 
     del ds.inc
 
