@@ -69,6 +69,7 @@ def normalize_args(args):
         "distThDist2Mean", "distThAD",
         "morphPreAD", "morphPreRH", "morphPreDist2Mean",
         "thInund", "rInund", "rProb", "terrain_slope_th", "dem_res",
+        "LIA_th"
     ]
     for name in float_fields:
         if hasattr(args, name):
@@ -124,6 +125,12 @@ def normalize_args(args):
 
     if hasattr(args, "blockSizeMorph"):
         args.morphPreBlockSize = int(args.blockSizeMorph)
+
+    if hasattr(args, "LIA_path"):
+        args.slope_path = args.LIA_path
+
+    if hasattr(args, "LIA_th"):
+        args.terrain_slope_th = args.LIA_th
 
     return args
 
@@ -298,8 +305,8 @@ def parse(config_json=None):
     parser.add_argument('--thSizeMorph', nargs='*', type=float, default=[10, 10, 10, 10, 50],
                         help='Minimum object size for each credibility level in morphology. Default [10, 10, 10, 10, 50].')
 
-    parser.add_argument('--thCompMorph', nargs='*', type=float, default=[0, 0, 0.25, 1, 2],
-                        help='Compactness thresholds for each credibility level in morphology. Default [0, 0, 0.25, 1, 2].')
+    parser.add_argument('--thCompMorph', nargs='*', type=float, default=[0, 1.2, 1.6, 2.0, 2.4],
+                        help='Compactness thresholds for each credibility level in morphology. Default [0, 1.2, 1.6, 2.0, 2.4].')
 
     parser.add_argument('--thInund', type=float, default=0.3,
                         help='Minimal change fraction for inundation logic. Default 0.3.')
@@ -323,13 +330,19 @@ def parse(config_json=None):
                         help='Optional terrain exclusion mask raster path. Highest priority if provided.')
 
     parser.add_argument('--slope_path', type=str, default=None,
-                        help='Optional precomputed slope raster path (degree). Used if terrain_mask_path is not provided.')
+                        help='Optional precomputed slope raster path (degree). Not used anymore, replaced by LIA_path.')
+
+    parser.add_argument('--LIA_path', type=str, default=None,
+                        help='Optional precomputed LIA raster path (degree). Used if terrain_mask_path is not provided.')
 
     parser.add_argument('--ice_mask_path', type=str, default=None,
                         help='Optional precomputed ice raster path (binary, 1 for ice).')
 
     parser.add_argument('--terrain_slope_th', type=float, default=55.0,
-                        help='Slope threshold in degrees for terrain exclusion. Default 55.0.')
+                        help='Slope threshold in degrees for terrain exclusion. Not used anymore, replaced by LIA_th.')
+
+    parser.add_argument('--LIA_th', type=float, default=55.0,
+                        help='LIA threshold in degrees for mountain shadow exclusion. Default 55.0.')
 
     parser.add_argument('--dem_res', type=float, default=90.0,
                         help='DEM processing resolution in meters for terrain mask generation. Larger values are faster and use less memory. Default 90.0.')

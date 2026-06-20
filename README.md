@@ -32,9 +32,9 @@ python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> [o
 ```
 Without specifying other parameters, the RAPID v2 default mode will NOT apply exclusion masks.
 
-If a terrain/mountain shadow mask is wanted, please run by the `--slope_path` parameter, as shown below.
+If a terrain/mountain shadow mask is wanted, please run by the `--LIA_path` parameter, as shown below.
 ```
-python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> --slope_path "path_to_lia" [other possible parameters]
+python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> --LIA_path "path_to_lia" [other possible parameters]
 ```
 This will run RAPID with the input parameters that specified in <PATH_JSON>.
 ```

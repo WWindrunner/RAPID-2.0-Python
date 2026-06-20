@@ -3,3 +3,4 @@
 output/
 test_images/
 logs/
+temp*
