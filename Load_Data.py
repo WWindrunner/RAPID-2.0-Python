@@ -268,13 +268,13 @@ def Load_Data(args):
         ds.ocean_mask = ds.ocean_mask.rechunk(ds.img_lp.chunks)
 
     # save preprocessed / clipped ocean mask
-    save_ancillary_tif(
-        ds.ocean_mask,
-        args,
-        out_name="ocean_mask.tif",
-        dtype="uint8",
-        nodata=255
-    )
+    #save_ancillary_tif(
+    #    ds.ocean_mask,
+    #    args,
+    #    out_name="ocean_mask.tif",
+    #    dtype="uint8",
+    #    nodata=255
+    #)
 
     # terrain exclusion ancillary data
     # Priority:

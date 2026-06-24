@@ -347,18 +347,18 @@ def morph_pre_scene(scene_pack, blockSize=None):
 
     isWindy = 0
     if VHDetected != 0:
-        isWindy = int((VHDetectedHigh / VHDetected) >= 0.5)
+        isWindy = int((VHDetectedHigh / VHDetected) >= 0.2)
 
     print(f"VHDetectedHigh = {VHDetectedHigh}")
     print(f"VHDetected = {VHDetected}")
     print(f"Windy case: {isWindy}")
 
     fileOut = os.path.join(dirMorph, "hi_cred_bimod_th.npz")
-    np.savez(
-        fileOut,
-        thBimodal=thBimodal,
-        isWindy=isWindy
-    )
+    #np.savez(
+    #    fileOut,
+    #    thBimodal=thBimodal,
+    #    isWindy=isWindy
+    #)
 
     if thBimodal.size > 0:
         finite = thBimodal[np.isfinite(thBimodal)]
@@ -921,6 +921,9 @@ def morph_block_worker(
     Iqp_block,
     LCC_block,
     water_occ_block,
+    terrain_mask_block,
+    slope_block,
+    ice_block,
     nCatPP,
     nCatQP,
     idx_vv,
@@ -942,6 +945,45 @@ def morph_block_worker(
     import numpy as np
     import rasterio
 
+    DEBUG_SAVE = False
+
+    def _save_debug(arr, name):
+        if not DEBUG_SAVE:
+            return
+
+        debug_dir = os.path.join(morph_out_dir, "debug")
+        os.makedirs(debug_dir, exist_ok=True)
+
+        out_arr = np.full(arr.shape, 255, dtype=np.uint8)
+
+        valid = np.isfinite(arr)
+        out_arr[valid] = arr[valid].astype(np.uint8)
+
+        debug_file = os.path.join(
+            debug_dir,
+            f"{name}_{iR}_{iC}.tif"
+        )
+
+        with rasterio.open(
+            debug_file,
+            "w",
+            driver="GTiff",
+            height=arr.shape[0],
+            width=arr.shape[1],
+            count=1,
+            dtype=out_arr.dtype,
+            transform=sub_transform_from_ref(
+                block_transform,
+                r0Load,
+                c0Load
+            ),
+            crs=crs,
+            nodata=255,
+            compress="deflate",
+            tiled=True
+        ) as dst:
+            dst.write(out_arr, 1)
+    
     # print(f"[morph_block_worker] start ({iR + 1},{iC + 1})", flush=True)
 
     # -----------------------------
@@ -998,11 +1040,21 @@ def morph_block_worker(
     maskPWHighCred = maskPW & ((rasWBCo > 0) | (rasWBCross > 0))
     rasWB[maskPWHighCred] = 1
 
+    # ---- define VH high-confidence classes for windy case ----
+    if isWindy:
+        vh_high_classes = list(idx_vh[:2]) + [nCatQP + 1]
+        maskVHHigh = np.isin(rasWBCross, vh_high_classes)
+    else:
+        maskVHHigh = np.zeros_like(rasWBCross, dtype=bool)
+
     if isWindy:
         maskWaterProb = (
             (~maskPWHighCred)
             & (water_occ > 0)
-            & ((rasWBCo > 0) | (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1)))
+            & (
+                (rasWBCo > 0) |
+                maskVHHigh
+            )
             & (~maskOut)
         )
     else:
@@ -1012,29 +1064,65 @@ def morph_block_worker(
             & (rasWBCo > 0)
             & (~maskOut)
         )
+
     rasWB[maskWaterProb] = 2
 
     if isWindy:
         maskOtherHighCred = (
-            ((rasWBCo == idx_vv[0]) | (rasWBCo == (nCatPP + 1)) |
-             (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1)))
+            (
+                (rasWBCo == idx_vv[0]) |
+                (rasWBCo == (nCatPP + 1)) |
+                maskVHHigh
+            )
             & (rasWB == 0)
             & (~maskOut)
         )
     else:
         maskOtherHighCred = (
-            ((rasWBCo == idx_vv[0]) | (rasWBCo == (nCatPP + 1)))
+            (
+                (rasWBCo == idx_vv[0]) |
+                (rasWBCo == (nCatPP + 1))
+            )
             & (rasWB == 0)
             & (~maskOut)
         )
+
     rasWB[maskOtherHighCred] = 3
 
+    vv_mod_classes = []
+    vh_mod_classes = []
+
+    # VV second + third water-like classes
     if len(idx_vv) >= 2:
-        maskOtherModCred = (rasWBCo == idx_vv[1]) & (rasWB == 0) & (~maskOut)
-        rasWB[maskOtherModCred] = 4
+        vv_mod_classes.append(idx_vv[1])
+
+    if len(idx_vv) >= 3:
+        vv_mod_classes.append(idx_vv[2])
+
+    # VH second + third water-like classes (windy only)
+    if isWindy:
+        if len(idx_vh) >= 2:
+            vh_mod_classes.append(idx_vh[1])
+
+        if len(idx_vh) >= 3:
+            vh_mod_classes.append(idx_vh[2])
+
+    maskOtherModCred = (
+        (
+            np.isin(rasWBCo, vv_mod_classes)
+            |
+            (isWindy and np.isin(rasWBCross, vh_mod_classes))
+        )
+        & (rasWB == 0)
+        & (~maskOut)
+    )
+
+    rasWB[maskOtherModCred] = 4
 
     rasWB[(rasWBCo > 0) & (rasWB == 0)] = 5
 
+    _save_debug(rasWB, "01_seed")
+    
     # =========================================================
     # build only needed threshold maps, no full 3D stacks
     # =========================================================
@@ -1125,14 +1213,42 @@ def morph_block_worker(
         loc = maskPatches
         thPWppBlock[loc] = np.where(thPWppBlock[loc] > 0, thPWppBlock[loc], fill_val)
 
+        #if isWindy:
+        #    accept = (Ipp < thPWppBlock) | (Iqp < thPWqpBlock)
+        #else:
+        #    accept = (Ipp < thPWppBlock)
+
+        vv_strong = (
+            (rasWBCo == idx_vv[0]) |
+            ((len(idx_vv) >= 2) & (rasWBCo == idx_vv[1])) |
+            ((len(idx_vv) >= 2) & (rasWBCo == (nCatPP + 1)))
+        )
+
+        vh_strong = (
+            (rasWBCross == idx_vh[0]) |
+            ((len(idx_vh) >= 2) & (rasWBCross == (nCatQP + 1)))
+        )
+
         if isWindy:
-            accept = (Ipp < thPWppBlock) | (Iqp < thPWqpBlock)
+            accept = (
+                (Ipp < thPWppBlock) |
+                (Iqp < thPWqpBlock) |
+                (vv_strong) |
+                (vh_strong)
+            )
         else:
-            accept = (Ipp < thPWppBlock)
-        rasWB[maskPatches] = 2 * accept[maskPatches].astype(np.float32)
+            accept = (
+                (Ipp < thPWppBlock) |
+                vv_strong
+            )
 
+        update = maskPatches & accept
+        rasWB[update] = 2
+        #rasWB[maskPatches] = 2 * accept[maskPatches].astype(np.float32)
+        _save_debug(rasWB, "02_after_class2")
+        
         del thPWppBlock, thPWqpBlock, CM_seed, maskPatches, accept
-
+        
     # ---- form non-PW highly credible objects ----
     maskSeeds = (rasWB == 3)
     RSeeds, CSeeds = np.where(maskSeeds)
@@ -1151,8 +1267,11 @@ def morph_block_worker(
                 thMatOut = np.minimum(thMatOut, np.float32(cap_val))
 
             accept = (Ipp < thMatOut) | (Iqp < thPWqpBlock)
-            rasWB[maskPatches] = 3 * accept[maskPatches].astype(np.float32)
-
+            update = maskPatches & accept
+            rasWB[update] = 3
+            #rasWB[maskPatches] = 3 * accept[maskPatches].astype(np.float32)
+            _save_debug(rasWB, "03_after_class3")
+            
             del thMatOut, thPWqpBlock, maskPatches, CM_seed, accept
         else:
             WBMax = (rasWBCo > 0) & (rasWB > 2)
@@ -1166,10 +1285,13 @@ def morph_block_worker(
                 thMatOut = np.minimum(thMatOut, np.float32(cap_val))
 
             accept = (Ipp < thMatOut)
-            rasWB[maskPatches] = 3 * accept[maskPatches].astype(np.float32)
-
+            update = maskPatches & accept
+            rasWB[update] = 3
+            #rasWB[maskPatches] = 3 * accept[maskPatches].astype(np.float32)
+            _save_debug(rasWB, "03_after_class3")
+            
             del thMatOut, maskPatches, accept
-
+            
     # ---- moderate-credible objects ----
     maskSeeds = (rasWB == 4)
     if np.any(maskSeeds) and (thpp_mod is not None):
@@ -1185,7 +1307,9 @@ def morph_block_worker(
             thMatOut = np.minimum(thMatOut, np.float32(cap_val))
 
         accept = (Ipp < thMatOut)
-        rasWB[maskPatches] = 4 * accept[maskPatches].astype(np.float32)
+        update = maskPatches & accept
+        rasWB[update] = 4
+        #rasWB[maskPatches] = 4 * accept[maskPatches].astype(np.float32)
 
         del thMatOut, maskPatches, accept
 
@@ -1196,6 +1320,8 @@ def morph_block_worker(
         if np.isfinite(cap_val):
             rasWB[maskLow] = 5 * (Ipp[maskLow] < np.float32(cap_val)).astype(np.float32)
 
+    _save_debug(rasWB, "04_before_cleanup")
+    
     # =========================================================
     # step 4) remove small objects / low compactness
     # =========================================================
@@ -1235,11 +1361,13 @@ def morph_block_worker(
             # high class in co-pol: idx_vv[0] and nCatPP+1 are equally important
             high_mask = (rasWBCo == idx_vv[0]) | (rasWBCo == (nCatPP + 1))
 
-            # windy case: let VH high class also contribute as class 2
+            # windy case: let VH high classes also contribute as class 3
             if isWindy:
-                high_mask = high_mask | (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1))
+                vh_high_classes = list(idx_vh[:2]) + [nCatQP + 1]
+                high_mask = high_mask | np.isin(rasWBCross, vh_high_classes)
+                #high_mask = high_mask | (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1))
 
-            catVector[high_mask] = 2
+            catVector[high_mask] = 3
 
             # moderate class from co-pol
             if len(idx_vv) >= 2:
@@ -1298,8 +1426,116 @@ def morph_block_worker(
         mask2Remove = mask2Remove | mask2Remove_i
     rasWB[mask2Remove] = 0
 
+    # ---- terrain object-level exclusion ----
+    # Priority:
+    # 1) terrain_mask_block: 1 = terrain/shadow candidate
+    # 2) slope_block: local incidence angle / slope, use threshold
+    terrain_candidate = None
+
+    if terrain_mask_block is not None:
+        terrain_candidate = np.isfinite(terrain_mask_block) & (terrain_mask_block > 0)
+    elif slope_block is not None:
+        lia_th = 55.0
+        terrain_candidate = np.isfinite(slope_block) & (slope_block > lia_th)
+
+    if terrain_candidate is not None:
+        # Only treat high-angle terrain in low water-occurrence areas as exclusion candidate
+        terrain_candidate = terrain_candidate & (water_occ <= 5)
+
+        terrain_overlap_th = 0.5
+        maskTerrainRemove = np.zeros((rows, cols), dtype=bool)
+
+        for credibility in range(1, nCred + 1):
+            CMc = CM[:, :, credibility - 1]
+
+            # Only check objects intersecting terrain_candidate
+            ids_hit = np.unique(CMc[terrain_candidate & (CMc > 0)])
+            if ids_hit.size == 0:
+                continue
+
+            for pid in ids_hit:
+                obj_mask = (CMc == pid)
+                obj_area = np.count_nonzero(obj_mask)
+                if obj_area == 0:
+                    continue
+
+                terrain_area = np.count_nonzero(obj_mask & terrain_candidate)
+                terrain_ratio = terrain_area / obj_area
+
+                if terrain_ratio >= terrain_overlap_th:
+                    maskTerrainRemove |= obj_mask
+
+        rasWB[maskTerrainRemove & (~np.isnan(rasWB))] = 0
+
+    # ---- bare/sparse vegetation pixel-level exclusion ----
+    # ESA WorldCover: 60 = Bare / sparse vegetation
+    # Do not remove areas with water occurrence > 5.
+    bare_sparse_candidate = (
+        (LCC == 60)
+        & (water_occ <= 5)
+    )
+
+    rasWB[bare_sparse_candidate & (~np.isnan(rasWB))] = 0
+
+    # ---- ice/snow pixel-level exclusion ----
+    # ice_block: 1 = ice/snow candidate, 0 = keep
+    if ice_block is not None:
+        ice_candidate = (
+            np.isfinite(ice_block)
+            & (ice_block > 0)
+            # & (water_occ <= 5)
+        )
+
+        rasWB[ice_candidate & (~np.isnan(rasWB))] = 0
+    
     # remove small objects / low compactness
     compactScore, area = compactness(CM)
+
+    if DEBUG_SAVE:
+        print("Compactness statistics by credibility layer:")
+
+        for credibility in range(1, nCred + 1):
+            try:
+                comp_arr = compactScore[credibility - 1]
+                area_arr = area[credibility - 1]
+            except Exception:
+                print(f"  credibility={credibility}: compactness/area unavailable")
+                continue
+
+            if comp_arr is None or len(comp_arr) == 0:
+                print(f"  credibility={credibility}: no patches")
+                continue
+
+            compact_vals = np.asarray(comp_arr[:, 1], dtype=float)
+            compact_vals = compact_vals[np.isfinite(compact_vals)]
+            
+            if compact_vals.size == 0:
+                print(f"  credibility={credibility}: no valid compactness values")
+                continue
+
+            msg = (
+                f"  credibility={credibility}: "
+                f"n={compact_vals.size}, "
+                f"compact_min={np.min(compact_vals):.4f}, "
+                f"compact_max={np.max(compact_vals):.4f}, "
+                f"compact_mean={np.mean(compact_vals):.4f}, "
+                f"compact_median={np.median(compact_vals):.4f}"
+            )
+            
+            if area_arr is not None and len(area_arr) > 0:
+                area_vals = np.asarray(area_arr[:, 1], dtype=float)
+                area_vals = area_vals[np.isfinite(area_vals)]
+
+                if area_vals.size > 0:
+                    msg += (
+                        f", area_min={np.min(area_vals):.1f}, "
+                        f"area_max={np.max(area_vals):.1f}, "
+                        f"area_mean={np.mean(area_vals):.1f}, "
+                        f"area_median={np.median(area_vals):.1f}"
+                    )
+
+            print(msg)
+    
     for credibility in range(1, nCred + 1):
         CMc = CM[:, :, credibility - 1]
         realCred = lstRealCred[credibility - 1]
@@ -1336,7 +1572,7 @@ def morph_block_worker(
     out = np.full(core.shape, 255, dtype=np.uint8)
     valid = np.isfinite(core) & (core >= 0) & (core < 255)
     out[valid] = core[valid].astype(np.uint8)
-
+    
     # --- write block result ---
     block_file = os.path.join(
         morph_out_dir,
@@ -1365,6 +1601,10 @@ def morph_block_worker(
     if thpp_mod is not None:
         del thpp_mod
     del CM, lstRealCred, core, out
+    if terrain_mask_block is not None:
+        del terrain_mask_block
+    if slope_block is not None:
+        del slope_block
     gc.collect()
 
     # print(f"[morph_block_worker] finished block ({iR + 1},{iC + 1})", flush=True)
@@ -1421,6 +1661,22 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     idx_vv = np.argsort(Cpp) + 1
     idx_vh = np.argsort(Cqp) + 1
 
+    print("[morph_proc_scene_main] VV sigma2 by category:")
+    for cat_id, sigma in enumerate(Cpp, start=1):
+        print(f"  VV class {cat_id}: sigma2 = {sigma}", flush=True)
+
+    print("[morph_proc_scene_main] VV classes sorted from most water-like to least:")
+    print(f"  idx_vv = {idx_vv.tolist()}", flush=True)
+    print(f"  extra VV class = {nCatPP + 1}", flush=True)
+
+    print("[morph_proc_scene_main] VH sigma2 by category:")
+    for cat_id, sigma in enumerate(Cqp, start=1):
+        print(f"  VH class {cat_id}: sigma2 = {sigma}", flush=True)
+
+    print("[morph_proc_scene_main] VH classes sorted from most water-like to least:")
+    print(f"  idx_vh = {idx_vh.tolist()}", flush=True)
+    print(f"  extra VH class = {nCatQP + 1}", flush=True)
+
     if thBimodal.size > 0:
         thPrcBimodal = np.asarray(getattr(args_vv, "thPrcBimodal", [50, 25, 10]), dtype=float).reshape(-1)
         if thPrcBimodal.size == 0:
@@ -1444,6 +1700,19 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
         colsImage = src.width
         ref_transform = src.transform
         ref_crs = src.crs
+
+    # ---- terrain slope from DEM ----
+    if hasattr(ds_vv, "dem"):
+        print("[morph_proc_scene_main] calculating slope from DEM", flush=True)
+
+        slope_all = calc_slope(ds_vv.dem, ref_transform, ref_crs)
+
+        # align chunks with SAR
+        if hasattr(slope_all, "rechunk"):
+            slope_all = slope_all.rechunk(ds_vv.img_lp.chunks)
+
+    else:
+        slope_all = None
 
     nR, nC, r0, c0, nRows, nCols, _, _ = get_block(
         rowsImage,
@@ -1524,6 +1793,28 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
             LCC_block = ds_vv.land_cover[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
             water_occ_block = ds_vv.water_occurrence[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
 
+            terrain_mask_block = None
+            slope_block = None
+            ice_block = None
+
+            if getattr(ds_vv, "terrain_mask", None) is not None:
+                terrain_mask_block = ds_vv.terrain_mask[
+                    r0Load:r0Load + nRowsLoad,
+                    c0Load:c0Load + nColsLoad
+                ]
+
+            if getattr(ds_vv, "slope", None) is not None:
+                slope_block = ds_vv.slope[
+                    r0Load:r0Load + nRowsLoad,
+                    c0Load:c0Load + nColsLoad
+                ]
+
+            if getattr(ds_vv, "ice_mask", None) is not None:
+                ice_block = ds_vv.ice_mask[
+                    r0Load:r0Load + nRowsLoad,
+                    c0Load:c0Load + nColsLoad
+                ]
+            
             pending_tasks.append(
                 morph_block_worker(
                     iR=iR,
@@ -1546,6 +1837,9 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
                     Iqp_block=Iqp_block,
                     LCC_block=LCC_block,
                     water_occ_block=water_occ_block,
+                    terrain_mask_block=terrain_mask_block,
+                    slope_block=slope_block,
+                    ice_block=ice_block,
                     nCatPP=nCatPP,
                     nCatQP=nCatQP,
                     idx_vv=idx_vv,
@@ -1617,6 +1911,10 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
             os.remove(f)
         except Exception:
             pass
+        
+    if hasattr(ds_vv, "terrain_mask"):
+        del ds_vv.terrain_mask
+
     print("[morph_proc_scene_main] cleanup finished", flush=True)
 
     scene_pack["morph_proc"] = {
