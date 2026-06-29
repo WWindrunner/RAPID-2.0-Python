@@ -1536,7 +1536,7 @@ def morph_block_worker(
                     )
 
             print(msg)
-    
+
     for credibility in range(1, nCred + 1):
         CMc = CM[:, :, credibility - 1]
         realCred = lstRealCred[credibility - 1]
@@ -1551,29 +1551,48 @@ def morph_block_worker(
         except Exception:
             raise NotImplementedError("compactness() output structure is not yet defined.")
 
-        loc = np.searchsorted(realCred[:, 0], patchID)
-        valid_loc = (loc < len(realCred)) & (realCred[loc, 0] == patchID)
+        maskSmall = np.zeros((rows, cols), dtype=bool)
+        maskVoid = np.zeros((rows, cols), dtype=bool)
 
-        patchID = patchID[valid_loc]
-        areaC = areaC[valid_loc]
-        loc = loc[valid_loc]
-        credC = realCred[loc, 1]
+        if patchID.size > 0:
+            loc = np.searchsorted(realCred[:, 0], patchID)
+            valid_loc = loc < len(realCred)
 
-        thArea = np.asarray(thSize)[credC - 1]
-        IDSmall = patchID[areaC < thArea]
-        maskSmall = np.isin(CMc, IDSmall)
+            patchID_tmp = patchID[valid_loc]
+            areaC_tmp = areaC[valid_loc]
+            loc_tmp = loc[valid_loc]
 
-        loc_comp = np.searchsorted(realCred[:, 0], compactID)
-        valid_comp = (loc_comp < len(realCred)) & (realCred[loc_comp, 0] == compactID)
+            valid_match = realCred[loc_tmp, 0] == patchID_tmp
 
-        compactID = compactID[valid_comp]
-        compactC = compactC[valid_comp]
-        loc_comp = loc_comp[valid_comp]
-        credComp = realCred[loc_comp, 1]
+            patchID_m = patchID_tmp[valid_match]
+            areaC_m = areaC_tmp[valid_match]
+            loc_m = loc_tmp[valid_match]
 
-        thCompC = np.asarray(thCompactness)[credComp - 1]
-        IDVoid = compactID[compactC < thCompC]
-        maskVoid = np.isin(CMc, IDVoid)
+            if patchID_m.size > 0:
+                credC = realCred[loc_m, 1]
+                thArea = np.asarray(thSize)[credC - 1]
+                IDSmall = patchID_m[areaC_m < thArea]
+                maskSmall = np.isin(CMc, IDSmall)
+
+        if compactID.size > 0:
+            loc_comp = np.searchsorted(realCred[:, 0], compactID)
+            valid_comp = loc_comp < len(realCred)
+
+            compactID_tmp = compactID[valid_comp]
+            compactC_tmp = compactC[valid_comp]
+            loc_comp_tmp = loc_comp[valid_comp]
+
+            valid_comp_match = realCred[loc_comp_tmp, 0] == compactID_tmp
+
+            compactID_m = compactID_tmp[valid_comp_match]
+            compactC_m = compactC_tmp[valid_comp_match]
+            loc_comp_m = loc_comp_tmp[valid_comp_match]
+
+            if compactID_m.size > 0:
+                credComp = realCred[loc_comp_m, 1]
+                thCompC = np.asarray(thCompactness)[credComp - 1]
+                IDVoid = compactID_m[compactC_m < thCompC]
+                maskVoid = np.isin(CMc, IDVoid)
 
         rasWB[(maskVoid | maskSmall) & (~np.isnan(rasWB))] = 0
 
