@@ -1321,9 +1321,30 @@ def morph_block_worker(
             rasWB[maskLow] = 5 * (Ipp[maskLow] < np.float32(cap_val)).astype(np.float32)
 
     _save_debug(rasWB, "04_before_cleanup")
-    
+
+    # ---- bare/sparse vegetation pixel-level exclusion ----
+    # ESA WorldCover: 60 = Bare / sparse vegetation
+    # Do not remove areas with water occurrence > 5.
+    bare_sparse_candidate = (
+            (LCC == 60)
+            & (water_occ <= 5)
+    )
+
+    rasWB[bare_sparse_candidate & (~np.isnan(rasWB))] = 0
+
+    # ---- ice/snow pixel-level exclusion ----
+    # ice_block: 1 = ice/snow candidate, 0 = keep
+    if ice_block is not None:
+        ice_candidate = (
+                np.isfinite(ice_block)
+                & (ice_block > 0)
+                # & (water_occ <= 5)
+        )
+
+        rasWB[ice_candidate & (~np.isnan(rasWB))] = 0
+
     # =========================================================
-    # step 4) remove small objects / low compactness
+    # Re-categorize the water classes based on LCC and VV/VH results
     # =========================================================
     nCred = 5
     CM = np.zeros((rows, cols, nCred), dtype=np.int32)
@@ -1466,27 +1487,7 @@ def morph_block_worker(
                     maskTerrainRemove |= obj_mask
 
         rasWB[maskTerrainRemove & (~np.isnan(rasWB))] = 0
-
-    # ---- bare/sparse vegetation pixel-level exclusion ----
-    # ESA WorldCover: 60 = Bare / sparse vegetation
-    # Do not remove areas with water occurrence > 5.
-    bare_sparse_candidate = (
-        (LCC == 60)
-        & (water_occ <= 5)
-    )
-
-    rasWB[bare_sparse_candidate & (~np.isnan(rasWB))] = 0
-
-    # ---- ice/snow pixel-level exclusion ----
-    # ice_block: 1 = ice/snow candidate, 0 = keep
-    if ice_block is not None:
-        ice_candidate = (
-            np.isfinite(ice_block)
-            & (ice_block > 0)
-            # & (water_occ <= 5)
-        )
-
-        rasWB[ice_candidate & (~np.isnan(rasWB))] = 0
+        CM[maskTerrainRemove, :] = 0
     
     # remove small objects / low compactness
     compactScore, area = compactness(CM)
@@ -1551,14 +1552,26 @@ def morph_block_worker(
             raise NotImplementedError("compactness() output structure is not yet defined.")
 
         loc = np.searchsorted(realCred[:, 0], patchID)
-        loc = np.clip(loc, 0, len(realCred) - 1)
+        valid_loc = (loc < len(realCred)) & (realCred[loc, 0] == patchID)
+
+        patchID = patchID[valid_loc]
+        areaC = areaC[valid_loc]
+        loc = loc[valid_loc]
         credC = realCred[loc, 1]
 
         thArea = np.asarray(thSize)[credC - 1]
         IDSmall = patchID[areaC < thArea]
         maskSmall = np.isin(CMc, IDSmall)
 
-        thCompC = np.asarray(thCompactness)[credC - 1]
+        loc_comp = np.searchsorted(realCred[:, 0], compactID)
+        valid_comp = (loc_comp < len(realCred)) & (realCred[loc_comp, 0] == compactID)
+
+        compactID = compactID[valid_comp]
+        compactC = compactC[valid_comp]
+        loc_comp = loc_comp[valid_comp]
+        credComp = realCred[loc_comp, 1]
+
+        thCompC = np.asarray(thCompactness)[credComp - 1]
         IDVoid = compactID[compactC < thCompC]
         maskVoid = np.isin(CMc, IDVoid)
 
