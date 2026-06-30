@@ -68,7 +68,12 @@ def reproject_clip_readsrc(in_rasfile, ref, resampling=rasterio.warp.Resampling.
 
 def reproject_clip_direct(in_ras, src, ref, resampling=rasterio.warp.Resampling.nearest):
     dest_shape = (src['count'], ref['height'], ref['width'])
-    out_arr = np.zeros(dest_shape, dtype=src['dtype'])
+
+    dst_nodata = src.get('nodata', None)
+    if dst_nodata is None:
+        dst_nodata = 0
+
+    out_arr = np.full(dest_shape, dst_nodata, dtype=src['dtype'])
 
     rasterio.warp.reproject(
         source=in_ras,
@@ -78,8 +83,8 @@ def reproject_clip_direct(in_ras, src, ref, resampling=rasterio.warp.Resampling.
         dst_transform=ref['transform'],
         dst_crs=ref['crs'],
         resampling=resampling,
-        src_nodata=src['nodata'],
-        dst_nodata=src['nodata'],
+        src_nodata=src.get('nodata', None),
+        dst_nodata=dst_nodata,
     )
 
     return out_arr

@@ -338,6 +338,9 @@ def parse(config_json=None):
     parser.add_argument('--ice_mask_path', type=str, default=None,
                         help='Optional precomputed ice raster path (binary, 1 for ice).')
 
+    parser.add_argument('--desert_mask_path', type=str, default=None,
+                        help='Optional precomputed dark area raster path (binary, 1 for dark area).')
+
     parser.add_argument('--terrain_slope_th', type=float, default=55.0,
                         help='Slope threshold in degrees for terrain exclusion. Not used anymore, replaced by LIA_th.')
 

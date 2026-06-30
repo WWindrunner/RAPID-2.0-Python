@@ -284,6 +284,7 @@ def Load_Data(args):
     # 4) skip terrain exclusion
     ds.terrain_mask = None
     ds.slope = None
+    ds.desert_mask = None
 
     terrain_mask_path = getattr(args, "terrain_mask_path", None)
     slope_path = getattr(args, "slope_path", None)
@@ -377,6 +378,25 @@ def Load_Data(args):
 
         if hasattr(ds.ice_mask, "rechunk"):
             ds.ice_mask = ds.ice_mask.rechunk(ds.img_lp.chunks)
+
+    # Desert mask
+    desert_mask_path = getattr(args, "desert_mask_path", None)
+    if desert_mask_path is not None:
+        print(f"[Load_Data] reading desert mask: {desert_mask_path}", flush=True)
+
+        if args.datamode == 'mem':
+            ds.desert_mask = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLocalRaster(
+                desert_mask_path, resampling="nearest"
+            ).squeeze()
+        else:
+            tempfileDesert = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLocalRaster(
+                desert_mask_path, resampling="nearest"
+            )
+            ds.desert_mask = readhdf(tempfileDesert.name, args.chunks).squeeze()
+            args.tempfiles.append(tempfileDesert)
+
+        if hasattr(ds.desert_mask, "rechunk"):
+            ds.desert_mask = ds.desert_mask.rechunk(ds.img_lp.chunks)
 
     del ds.inc
 

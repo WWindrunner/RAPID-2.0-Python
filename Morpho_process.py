@@ -924,6 +924,7 @@ def morph_block_worker(
     terrain_mask_block,
     slope_block,
     ice_block,
+    desert_block,
     nCatPP,
     nCatQP,
     idx_vv,
@@ -1343,6 +1344,17 @@ def morph_block_worker(
 
         rasWB[ice_candidate & (~np.isnan(rasWB))] = 0
 
+    # ---- dark area pixel-level exclusion ----
+    if desert_block is not None:
+        desert_candidate = (
+                np.isfinite(desert_block)
+                & (desert_block > 0)
+                & (water_occ <= 5)
+                & (LCC != 80)
+        )
+
+        rasWB[desert_candidate & (~np.isnan(rasWB))] = 0
+
     # =========================================================
     # Re-categorize the water classes based on LCC and VV/VH results
     # =========================================================
@@ -1386,7 +1398,7 @@ def morph_block_worker(
             if isWindy:
                 vh_high_classes = list(idx_vh[:2]) + [nCatQP + 1]
                 high_mask = high_mask | np.isin(rasWBCross, vh_high_classes)
-                #high_mask = high_mask | (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1))
+                # high_mask = high_mask | (rasWBCross == idx_vh[0]) | (rasWBCross == (nCatQP + 1))
 
             catVector[high_mask] = 3
 
@@ -1828,6 +1840,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
             terrain_mask_block = None
             slope_block = None
             ice_block = None
+            desert_block = None
 
             if getattr(ds_vv, "terrain_mask", None) is not None:
                 terrain_mask_block = ds_vv.terrain_mask[
@@ -1843,6 +1856,12 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
 
             if getattr(ds_vv, "ice_mask", None) is not None:
                 ice_block = ds_vv.ice_mask[
+                    r0Load:r0Load + nRowsLoad,
+                    c0Load:c0Load + nColsLoad
+                ]
+
+            if getattr(ds_vv, "desert_mask", None) is not None:
+                desert_block = ds_vv.desert_mask[
                     r0Load:r0Load + nRowsLoad,
                     c0Load:c0Load + nColsLoad
                 ]
@@ -1872,6 +1891,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
                     terrain_mask_block=terrain_mask_block,
                     slope_block=slope_block,
                     ice_block=ice_block,
+                    desert_block=desert_block,
                     nCatPP=nCatPP,
                     nCatQP=nCatQP,
                     idx_vv=idx_vv,
