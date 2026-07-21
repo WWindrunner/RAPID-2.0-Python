@@ -345,13 +345,45 @@ def morph_pre_scene(scene_pack, blockSize=None):
     else:
         thBimodal = np.array([], dtype=float)
 
-    isWindy = 0
-    if VHDetected != 0:
-        isWindy = int((VHDetectedHigh / VHDetected) >= 0.2)
+    # --------------------------------------------------
+    valid_pixels = int(np.count_nonzero(~ds_co.ocean_mask))
+    
+    vh_high_ratio = (
+        VHDetectedHigh / VHDetected
+        if VHDetected > 0
+        else 0.0
+    )
 
-    print(f"VHDetectedHigh = {VHDetectedHigh}")
-    print(f"VHDetected = {VHDetected}")
+    vh_high_area_ratio = (
+        VHDetectedHigh / valid_pixels
+        if valid_pixels > 0
+        else 0.0
+    )
+
+    vh_detect_area_ratio = (
+        VHDetected / valid_pixels
+        if valid_pixels > 0
+        else 0.0
+    )
+
+    windyHighRatioMin = 0.15
+    windyHighRatioMax = 0.43
+    windyDetectAreaMax = 0.06
+
+    isWindy = int(
+        (vh_high_ratio >= windyHighRatioMin)
+        and (vh_high_ratio <= windyHighRatioMax)
+        and (vh_detect_area_ratio <= windyDetectAreaMax)
+    )
+
+    print(
+        f"Windy thresholds: "
+        f"high_ratio=[{windyHighRatioMin:.2f}, {windyHighRatioMax:.2f}], "
+        f"detect_area<={windyDetectAreaMax:.2f}"
+    )
     print(f"Windy case: {isWindy}")
+
+    # --------------------------------------------------
 
     fileOut = os.path.join(dirMorph, "hi_cred_bimod_th.npz")
     #np.savez(
