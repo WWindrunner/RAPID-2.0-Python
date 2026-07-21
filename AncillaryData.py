@@ -28,10 +28,11 @@ class AncillaryData:
         Either a list of xarray objects or a stacked xarray object
     """
 
-    def __init__(self, ref=None, chunk_size='auto', datamode='mem'):
+    def __init__(self, ref=None, chunk_size='auto', datamode='mem', scratch_dir=None):
         self.ref = ref
         self.chunk_size = chunk_size
         self.datamode = datamode
+        self.scratch_dir = scratch_dir
         self.bounds = self.getbounds()
 
     def getbounds(self):
@@ -174,7 +175,10 @@ class AncillaryData:
         # --------------------------------------------------
         url = "https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_ocean.zip"
 
-        tmpdir = tempfile.mkdtemp()
+        tmpdir_obj = tempfile.TemporaryDirectory(
+            prefix="rapid_ocean_", dir=self.scratch_dir
+        )
+        tmpdir = tmpdir_obj.name
         zip_path = os.path.join(tmpdir, "ne_10m_ocean.zip")
 
         print(url)
@@ -253,7 +257,11 @@ class AncillaryData:
         # --------------------------------------------------
         # 6. Let merge_res do reprojection / resample / clip
         # --------------------------------------------------
-        return self.merge_res([ocean_tif])
+        try:
+            result = self.merge_res([ocean_tif])
+        finally:
+            tmpdir_obj.cleanup()
+        return result
 
     @tim
     def getLocalRaster(self, rasterfile, resampling="nearest"):
@@ -389,7 +397,10 @@ class AncillaryData:
 
         dem_files = self.glo30list(self.bounds)
 
-        tmpdir = tempfile.mkdtemp(prefix="rapid_dem_")
+        tmpdir_obj = tempfile.TemporaryDirectory(
+            prefix="rapid_dem_", dir=self.scratch_dir
+        )
+        tmpdir = tmpdir_obj.name
 
         tile_list_txt = os.path.join(tmpdir, "dem_tiles.txt")
         dem_vrt = os.path.join(tmpdir, "dem.vrt")
@@ -535,12 +546,13 @@ class AncillaryData:
             temp = da.from_array(arr, chunks=self.chunk_size)
 
         else:
-            temp = tempfile.NamedTemporaryFile()
+            temp = tempfile.NamedTemporaryFile(dir=self.scratch_dir)
             with rasterio.open(terrain_ref_tif) as src:
                 arr = src.read(1).astype(np.uint8)
 
             da.to_hdf5(temp.name, "/merged_array_raw", da.from_array(arr, chunks=self.chunk_size))
 
+        tmpdir_obj.cleanup()
         return temp
 
     def merge_res(self, rasterfiles, resampling=rasterio.warp.Resampling.nearest):
@@ -584,7 +596,7 @@ class AncillaryData:
             )
         else:
             import tempfile
-            temp = tempfile.NamedTemporaryFile()
+            temp = tempfile.NamedTemporaryFile(dir=self.scratch_dir)
             da.to_hdf5(
                 temp.name,
                 '/merged_array_raw',

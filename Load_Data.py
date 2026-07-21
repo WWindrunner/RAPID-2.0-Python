@@ -180,6 +180,14 @@ def Load_Data(args):
     oceantif = None
     args.varnames = ['img_lp', 'img_cp', 'inc']
 
+    def ancillary(datamode='mem'):
+        return AncillaryData(
+            ref=infilepath[0],
+            chunk_size=args.chunks,
+            datamode=datamode,
+            scratch_dir=getattr(args, "scratch_dir", None),
+        )
+
     class c:
         pass
 
@@ -217,10 +225,10 @@ def Load_Data(args):
     if wotif == None:
         if args.datamode == 'mem':
             setattr(ds, 'water_occurrence',
-                    AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getWO().squeeze())
+                    ancillary().getWO().squeeze())
             # args.tempfiles = None
         else:
-            tempfileWO = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getWO()
+            tempfileWO = ancillary(datamode=args.datamode).getWO()
             setattr(ds, 'water_occurrence', readhdf(tempfileWO.name, args.chunks).squeeze())
             args.tempfiles.append(tempfileWO)
     else:
@@ -244,9 +252,9 @@ def Load_Data(args):
     # land cover file
     if LCCtif == None:
         if args.datamode == 'mem':
-            setattr(ds, 'land_cover', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLCC().squeeze())
+            setattr(ds, 'land_cover', ancillary().getLCC().squeeze())
         else:
-            tempfileWO = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLCC()
+            tempfileWO = ancillary(datamode=args.datamode).getLCC()
             setattr(ds, 'land_cover', readhdf(tempfileWO.name, args.chunks).squeeze())
             args.tempfiles.append(tempfileWO)
     else:
@@ -257,9 +265,9 @@ def Load_Data(args):
 
     # ocean mask file
     if args.datamode == 'mem':
-        setattr(ds, 'ocean_mask', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getOceanMask().squeeze())
+        setattr(ds, 'ocean_mask', ancillary().getOceanMask().squeeze())
     else:
-        tempfileOM = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getOceanMask()
+        tempfileOM = ancillary(datamode=args.datamode).getOceanMask()
         setattr(ds, 'ocean_mask', readhdf(tempfileOM.name, args.chunks).squeeze())
         args.tempfiles.append(tempfileOM)
 
@@ -301,9 +309,9 @@ def Load_Data(args):
     # ---- 2) existing slope raster ----
     elif slope_path is not None:
         if args.datamode == 'mem':
-            setattr(ds, 'slope', AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLocalRaster(slope_path, resampling="bilinear").squeeze())
+            setattr(ds, 'slope', ancillary().getLocalRaster(slope_path, resampling="bilinear").squeeze())
         else:
-            tempfileSlope = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLocalRaster(slope_path, resampling="bilinear")
+            tempfileSlope = ancillary(datamode=args.datamode).getLocalRaster(slope_path, resampling="bilinear")
             setattr(ds, 'slope', readhdf(tempfileSlope.name, args.chunks).squeeze())
             args.tempfiles.append(tempfileSlope)
 
@@ -316,7 +324,7 @@ def Load_Data(args):
 
         if args.datamode == 'mem':
             ds.terrain_mask = (
-                AncillaryData(ref=infilepath[0], chunk_size=args.chunks)
+                ancillary()
                 .getTerrainMask(
                     slope_th=getattr(args, "terrain_slope_th", 20.0),
                     dem_res=getattr(args, "dem_res", 90.0),
@@ -325,7 +333,7 @@ def Load_Data(args):
             )
         else:
             tempfileTerrain = (
-                AncillaryData(ref=infilepath[0], chunk_size=args.chunks, datamode=args.datamode)
+                ancillary(datamode=args.datamode)
                 .getTerrainMask(
                     slope_th=getattr(args, "terrain_slope_th", 20.0),
                     dem_res=getattr(args, "dem_res", 90.0),
@@ -349,20 +357,14 @@ def Load_Data(args):
             setattr(
                 ds,
                 'ice_mask',
-                AncillaryData(
-                    ref=infilepath[0],
-                    chunk_size=args.chunks
-                ).getLocalRaster(
+                ancillary().getLocalRaster(
                     ice_mask_path,
                     resampling="nearest"
                 ).squeeze()
             )
         else:
             tempfileIce = (
-                AncillaryData(
-                    ref=infilepath[0],
-                    chunk_size=args.chunks
-                ).getLocalRaster(
+                ancillary(datamode=args.datamode).getLocalRaster(
                     ice_mask_path,
                     resampling="nearest"
                 )
@@ -385,11 +387,11 @@ def Load_Data(args):
         print(f"[Load_Data] reading desert mask: {desert_mask_path}", flush=True)
 
         if args.datamode == 'mem':
-            ds.desert_mask = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLocalRaster(
+            ds.desert_mask = ancillary().getLocalRaster(
                 desert_mask_path, resampling="nearest"
             ).squeeze()
         else:
-            tempfileDesert = AncillaryData(ref=infilepath[0], chunk_size=args.chunks).getLocalRaster(
+            tempfileDesert = ancillary(datamode=args.datamode).getLocalRaster(
                 desert_mask_path, resampling="nearest"
             )
             ds.desert_mask = readhdf(tempfileDesert.name, args.chunks).squeeze()

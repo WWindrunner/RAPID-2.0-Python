@@ -36,6 +36,26 @@ If a terrain/mountain shadow mask is wanted, please run by the `--LIA_path` para
 ```
 python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> --LIA_path "path_to_lia" [other possible parameters]
 ```
+
+For HPC runs, direct Dask spill and other temporary data to node-local or
+high-capacity scratch storage:
+```
+python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> --scratch_dir "$SLURM_TMPDIR"
+```
+If `--scratch_dir` is omitted, RAPID checks `RAPID_SCRATCH`, then
+`SLURM_TMPDIR`. Outside a configured HPC environment it uses `cache` beneath
+the output directory, falling back to the system temporary directory only if
+the output cache cannot be created. Each run creates and cleans its own
+job-specific subdirectory.
+
+In the default Dask thread mode, RAPID automatically assigns 90% of the memory
+reported by SLURM to the Dask worker, leaving 10% for Python, GDAL, plotting,
+and other unmanaged allocations. Outside SLURM the default is 100GB. An
+explicit worker limit can be supplied when needed:
+```
+export RAPID_MEMORY_LIMIT=108GB
+```
+
 This will run RAPID with the input parameters that specified in <PATH_JSON>.
 ```
 python -u RAPID.py <PATH_JSON>

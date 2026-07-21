@@ -12,6 +12,8 @@ from Morpho_process import *
 import subprocess
 import warnings
 import dask
+import tempfile
+import shutil
 from Quick_look import *
 
 warnings.filterwarnings("ignore")
@@ -353,6 +355,8 @@ def parse(config_json=None):
     # ---- current workflow / io ----
     parser.add_argument('--OUT_PATH', type=str, default='.')
     parser.add_argument('--filepath_list', nargs='*', default=[])
+    parser.add_argument('--scratch_dir', type=str, default=None,
+                        help='Root directory for RAPID/Dask temporary files. Defaults to RAPID_SCRATCH, SLURM_TMPDIR, or <OUT_PATH>/cache.')
 
     args, unparsed = parser.parse_known_args()
 
@@ -403,7 +407,7 @@ def dup_args(args, filepath, granuele_name, wotif=None):
     return args_new
 
 
-def setup_dask_from_slurm():
+def setup_dask_from_slurm(scratch_dir=None):
     """
     Setup Dask LocalCluster based on SLURM environment.
 
@@ -419,14 +423,19 @@ def setup_dask_from_slurm():
         return None
 
     ncpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
-    mem_gb = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
+    slurm_mem_mib = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
+    rapid_memory_limit = os.environ.get("RAPID_MEMORY_LIMIT")
     use_processes = os.environ.get("DASK_USE_PROCESSES", "0") == "1"
 
     if not use_processes:
         n_workers = 1
         threads_per_worker = ncpus
-        if mem_gb > 0:
-            mem_limit = f"{int(mem_gb * 0.9)}GB"
+        if rapid_memory_limit:
+            mem_limit = rapid_memory_limit
+        elif slurm_mem_mib > 0:
+            # SLURM_MEM_PER_NODE is reported in MiB. Keep 10% available for
+            # Python, GDAL, and other unmanaged allocations.
+            mem_limit = f"{int(slurm_mem_mib * 0.9)}MiB"
         else:
             mem_limit = "100GB"
 
@@ -436,6 +445,7 @@ def setup_dask_from_slurm():
             processes=False,
             memory_limit=mem_limit,
             dashboard_address=":8787",
+            local_directory=scratch_dir,
         )
         client = Client(cluster)
 
@@ -455,6 +465,7 @@ def setup_dask_from_slurm():
             processes=True,
             memory_limit=mem_limit,
             dashboard_address=":8787",
+            local_directory=scratch_dir,
         )
         client = Client(cluster)
 
@@ -465,6 +476,54 @@ def setup_dask_from_slurm():
         print("  dashboard:", client.dashboard_link)
 
     return client
+
+
+def create_job_scratch(requested_root=None, output_dir=None):
+    """Create an isolated scratch directory for this RAPID invocation."""
+    configured_root = (
+        requested_root
+        or os.environ.get("RAPID_SCRATCH")
+        or os.environ.get("SLURM_TMPDIR")
+    )
+
+    # On HPC, prefer explicitly configured or node-local scratch. For ordinary
+    # runs, keep the cache visible beside the requested output rather than
+    # allowing tempfile/Dask to silently select a directory under $HOME.
+    if configured_root:
+        candidate_roots = [configured_root]
+    else:
+        candidate_roots = []
+        if output_dir:
+            candidate_roots.append(os.path.join(output_dir, "cache"))
+        candidate_roots.append(tempfile.gettempdir())
+
+    job_id = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
+    last_error = None
+    for scratch_root in candidate_roots:
+        try:
+            scratch_root = os.path.abspath(os.path.expanduser(scratch_root))
+            os.makedirs(scratch_root, exist_ok=True)
+            job_scratch = tempfile.mkdtemp(
+                prefix=f"rapid_{job_id}_", dir=scratch_root
+            )
+            break
+        except OSError as e:
+            last_error = e
+            print(
+                f"WARNING: cannot use scratch root {scratch_root}: {e}",
+                flush=True,
+            )
+    else:
+        raise RuntimeError("Unable to create a RAPID scratch directory") from last_error
+
+    # Ensure Python tempfile users (and libraries honoring TMPDIR) use the same
+    # job-specific location. tempfile.tempdir resets its cached selection.
+    os.environ["TMPDIR"] = job_scratch
+    os.environ["DASK_TEMPORARY_DIRECTORY"] = job_scratch
+    tempfile.tempdir = job_scratch
+
+    print(f"RAPID scratch directory: {job_scratch}", flush=True)
+    return job_scratch
 
 
 def _make_pol_args(args_scene, pol):
@@ -735,34 +794,44 @@ def RAPID(*args, **kwargs):
     os.makedirs(args.WORK_PATH, exist_ok=True)
 
     filepath_list = args.filepath_list
+    previous_tmpdir = os.environ.get("TMPDIR")
+    previous_dask_tmpdir = os.environ.get("DASK_TEMPORARY_DIRECTORY")
+    previous_tempfile_dir = tempfile.tempdir
+    job_scratch = create_job_scratch(
+        getattr(args, "scratch_dir", None),
+        output_dir=args.WORK_PATH,
+    )
+    args.scratch_dir = job_scratch
 
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
 
-    # dask
-    client = setup_dask_from_slurm()
+    client = None
+    cluster = None
+    try:
+        client = setup_dask_from_slurm(job_scratch)
 
     # ----------------------------------
     # Build scene args list
     # Each filepath entry is one scene:
     #   [vv, vh]  or  [url]
     # ----------------------------------
-    args_list = []
-    for idx, filepath in enumerate(filepath_list):
-        if len(filepath_list) == len(args.granules):
-            granuele_name = args.granules[idx]
-        else:
-            granuele_name = _infer_scene_name(filepath)
+        args_list = []
+        for idx, filepath in enumerate(filepath_list):
+            if len(filepath_list) == len(args.granules):
+                granuele_name = args.granules[idx]
+            else:
+                granuele_name = _infer_scene_name(filepath)
 
-        args1 = dup_args(args, filepath, granuele_name, wotif=None)
-        args1.granules = granuele_name
-        args_list.append(args1)
+            args1 = dup_args(args, filepath, granuele_name, wotif=None)
+            args1.granules = granuele_name
+            args_list.append(args1)
 
-    if len(args_list) == 0:
-        raise ValueError("No scene input found in filepath_list.")
+        if len(args_list) == 0:
+            raise ValueError("No scene input found in filepath_list.")
 
     # mark the first scene as flood image if old code still checks this flag
-    args_list[0].floodimage = True
+        args_list[0].floodimage = True
 
     # ----------------------------------
     # WORKFLOW:
@@ -770,59 +839,77 @@ def RAPID(*args, **kwargs):
     # scene-level dual-pol Binary
     # scene-level Morph
     # ----------------------------------
-    with Timer('Load_Data Total'):
-        scene_loaded = dask.compute(*[dask.delayed(Load_Data)(arggs) for arggs in args_list])
+        with Timer('Load_Data Total'):
+            scene_loaded = dask.compute(*[dask.delayed(Load_Data)(arggs) for arggs in args_list])
 
-    with Timer('TOTAL BC TIME'):
-        scene_output = []
-        for args_scene, ds_scene in scene_loaded:
-            scene_output.append(Binary_classification_dualpol(args_scene, ds_scene))
+        with Timer('TOTAL BC TIME'):
+            scene_output = []
+            for args_scene, ds_scene in scene_loaded:
+                scene_output.append(Binary_classification_dualpol(args_scene, ds_scene))
 
-    with Timer('Morph_proc_scene'):
-        scene_output = [Morph_proc_scene(scene_pack) for scene_pack in scene_output]
+        with Timer('Morph_proc_scene'):
+            scene_output = [Morph_proc_scene(scene_pack) for scene_pack in scene_output]
 
-    with Timer('Quicklook'):
-        for scene_pack in scene_output:
-            args_scene = scene_pack["scene_args"]
-            ds_scene = scene_pack["scene_ds"]
-            morph = scene_pack["morph_proc"]
+        with Timer('Quicklook'):
+            for scene_pack in scene_output:
+                args_scene = scene_pack["scene_args"]
+                ds_scene = scene_pack["scene_ds"]
+                morph = scene_pack["morph_proc"]
             # print(morph)
 
-            fileMorphOut = morph.get("fileMorphOut")
+                fileMorphOut = morph.get("fileMorphOut")
             # print(fileMorphOut)
 
-            if not fileMorphOut or (not os.path.exists(fileMorphOut)):
-                print(f"[Quicklook] skip {args_scene.granules}: fileMorphOut not found", flush=True)
-                continue
+                if not fileMorphOut or (not os.path.exists(fileMorphOut)):
+                    print(f"[Quicklook] skip {args_scene.granules}: fileMorphOut not found", flush=True)
+                    continue
 
-            try:
-                quicklook(
-                    fileMorphOut=fileMorphOut,
-                    ds=ds_scene,
-                    args=args_scene,
-                    out_png=os.path.join(args_scene.dirOut, "quicklook.png"),
-                    scene_name=args_scene.granules
-                )
-                quicklook_map(
-                    fileMorphOut=fileMorphOut,
-                    ds=ds_scene,
-                    args=args_scene,
-                    out_png=os.path.join(args_scene.dirOut, "quicklook_map.png"),
-                    scene_name=args_scene.granules
-                )
-            except Exception as e:
-                print(f"[Quicklook] failed for {args_scene.granules}: {e}", flush=True)
-
-    if client is not None:
+                try:
+                    quicklook(
+                        fileMorphOut=fileMorphOut,
+                        ds=ds_scene,
+                        args=args_scene,
+                        out_png=os.path.join(args_scene.dirOut, "quicklook.png"),
+                        scene_name=args_scene.granules
+                    )
+                    quicklook_map(
+                        fileMorphOut=fileMorphOut,
+                        ds=ds_scene,
+                        args=args_scene,
+                        out_png=os.path.join(args_scene.dirOut, "quicklook_map.png"),
+                        scene_name=args_scene.granules
+                    )
+                except Exception as e:
+                    print(f"[Quicklook] failed for {args_scene.granules}: {e}", flush=True)
+    finally:
         try:
-            cluster = client.cluster
-        except Exception:
-            cluster = None
-
-        client.close()
-
-        if cluster is not None:
-            cluster.close()
+            if client is not None:
+                try:
+                    cluster = client.cluster
+                except Exception:
+                    cluster = None
+                try:
+                    client.close()
+                except Exception as e:
+                    print(f"WARNING: Dask client cleanup failed: {e}", flush=True)
+            if cluster is not None:
+                try:
+                    cluster.close()
+                except Exception as e:
+                    print(f"WARNING: Dask cluster cleanup failed: {e}", flush=True)
+        finally:
+            # All paths removed here are created uniquely by create_job_scratch.
+            tempfile.tempdir = previous_tempfile_dir
+            if previous_tmpdir is None:
+                os.environ.pop("TMPDIR", None)
+            else:
+                os.environ["TMPDIR"] = previous_tmpdir
+            if previous_dask_tmpdir is None:
+                os.environ.pop("DASK_TEMPORARY_DIRECTORY", None)
+            else:
+                os.environ["DASK_TEMPORARY_DIRECTORY"] = previous_dask_tmpdir
+            shutil.rmtree(job_scratch, ignore_errors=True)
+            print(f"RAPID scratch cleanup finished: {job_scratch}", flush=True)
 
 
 if __name__ == '__main__':
