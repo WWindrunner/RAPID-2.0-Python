@@ -148,6 +148,8 @@ class AncillaryData:
                 file_path = f"{s3_url_prefix}/v100/2020/map/ESA_WorldCover_10m_2020_v100_{tile}_Map.tif"
                 print(file_path)
                 elements.append(file_path)
+        layer = None
+        dataSource = None
         merged_resandclip = self.merge_res(elements)
         return merged_resandclip
 
@@ -209,6 +211,9 @@ class AncillaryData:
             # rasterio.rasterize needs GeoJSON-like dict, not JSON string
             geom_json = json.loads(geom.ExportToJson())
             shapes.append((geom_json, 1))
+
+        layer = None
+        ds = None
 
         if len(shapes) == 0:
             raise RuntimeError("No geometries found in ocean shapefile")
@@ -572,16 +577,19 @@ class AncillaryData:
         with rasterio.open(rasterfiles[0]) as src:
             src_dtype = src.dtypes[0]
 
-        data = [
-            dask.delayed(reproject_clip_readsrc)(
-                url,
-                refsrc,
-                resampling=resampling
+        # Process ancillary rasters one at a time.  These are commonly remote
+        # GeoTIFFs, and dispatching them as nested Dask tasks can keep multiple
+        # GDAL HTTP datasets/connections alive at once.  The called helper uses
+        # a rasterio context manager, so each source is closed before the next
+        # one is opened.
+        for rasterfile in rasterfiles:
+            results.append(
+                reproject_clip_readsrc(
+                    rasterfile,
+                    refsrc,
+                    resampling=resampling,
+                )
             )
-            for url in rasterfiles
-        ]
-
-        results = dask.compute(*data)
 
         merged_array_raw = (
             da.nanmax(da.stack(results, axis=0), axis=0)

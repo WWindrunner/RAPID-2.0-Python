@@ -416,6 +416,19 @@ def setup_dask_from_slurm(scratch_dir=None):
         export DASK_USE_PROCESSES=1
     """
     import os
+
+    # A distributed LocalCluster adds a scheduler, worker, dashboard, memory
+    # monitor, and their associated file descriptors.  Outside a real SLURM
+    # allocation RAPID has no scheduler-provided CPU/memory limits, so use the
+    # in-process synchronous scheduler instead.
+    if not os.environ.get("SLURM_JOB_ID"):
+        dask.config.set(scheduler="synchronous")
+        print(
+            "No SLURM allocation detected; using synchronous Dask scheduler.",
+            flush=True,
+        )
+        return None
+
     try:
         from dask.distributed import Client, LocalCluster
     except Exception as e:

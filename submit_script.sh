@@ -23,13 +23,14 @@ export OPENBLAS_NUM_THREADS=1
 # Keep Dask spill and all RAPID temporary files off the home filesystem.
 # Sites without SLURM_TMPDIR should replace /tmp with their HPC scratch path.
 scratch_base="${SLURM_TMPDIR:-/tmp}"
-export RAPID_SCRATCH="${scratch_base%/}/rapid_${SLURM_JOB_ID}"
+run_id="${SLURM_JOB_ID:-$$}"
+export RAPID_SCRATCH="${scratch_base%/}/rapid_${run_id}"
 mkdir -p "$RAPID_SCRATCH"
 export TMPDIR="$RAPID_SCRATCH"
 export DASK_TEMPORARY_DIRECTORY="$RAPID_SCRATCH"
 
 cleanup() {
-    if [[ -n "${RAPID_SCRATCH:-}" && "$(basename "$RAPID_SCRATCH")" == "rapid_${SLURM_JOB_ID}" ]]; then
+    if [[ -n "${RAPID_SCRATCH:-}" && "$(basename "$RAPID_SCRATCH")" == "rapid_${run_id}" ]]; then
         rm -rf -- "$RAPID_SCRATCH"
     fi
 }
