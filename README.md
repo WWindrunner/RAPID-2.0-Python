@@ -26,21 +26,28 @@ conda env create -f requirements.yml
 
 ## Usage
 ### RAPID.py
-This will run RAPID in single scene mode with direct input from command line. Note that by default the first input file should be co-polarization (VV or HH).
+This runs RAPID in single-scene mode. VV and VH must be local, single-band
+GeoTIFF files. The first SAR input is co-polarization (VV or HH).
 ```
-python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> [other possible parameters]
+python -u RAPID.py '<Input_Gamma0_CoPol>' '<Input_Gamma0_CrossPol>' <Output_Folder> [other possible parameters]
+```
+If `--inc_angle_path` is omitted, the input Gamma0 power rasters are assumed
+to have already been incidence-angle normalized. To perform normalization in
+RAPID, provide an ellipsoid incidence-angle raster:
+```
+python -u RAPID.py '<Input_Gamma0_CoPol>' '<Input_Gamma0_CrossPol>' <Output_Folder> --inc_angle_path '<Ellipsoid_Incidence_Angle>'
 ```
 Without specifying other parameters, the RAPID v2 default mode will NOT apply exclusion masks.
 
 If a terrain/mountain shadow mask is wanted, please run by the `--LIA_path` parameter, as shown below.
 ```
-python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> --LIA_path "path_to_lia" [other possible parameters]
+python -u RAPID.py '<Input_Gamma0_CoPol>' '<Input_Gamma0_CrossPol>' <Output_Folder> --inc_angle_path "path_to_ellipsoid_incidence_angle.tif" --LIA_path "path_to_lia.tif" [other possible parameters]
 ```
 
 For HPC runs, direct Dask spill and other temporary data to node-local or
 high-capacity scratch storage:
 ```
-python -u RAPID.py '<Input_SAR_CoPol>' '<Input_SAR_CrossPol>' <Output_Folder> --scratch_dir "$SLURM_TMPDIR"
+python -u RAPID.py '<Input_Gamma0_CoPol>' '<Input_Gamma0_CrossPol>' <Output_Folder> --inc_angle_path "path_to_ellipsoid_incidence_angle.tif" --scratch_dir "$SLURM_TMPDIR"
 ```
 If `--scratch_dir` is omitted, RAPID checks `RAPID_SCRATCH`, then
 `SLURM_TMPDIR`. Outside a configured HPC environment it uses `cache` beneath
@@ -68,8 +75,8 @@ Example of file input is shown here.
 ```
 "filepath_list": [
     [
-      "/path/to/scene_001/Sigma0_VV.tif",
-      "/path/to/scene_001/Sigma0_VH.tif"
+      "/path/to/scene_001/Gamma0_VV.tif",
+      "/path/to/scene_001/Gamma0_VH.tif"
     ]
   ],
 ```
@@ -81,13 +88,35 @@ Example of file input is shown here.
 ```
 Besides the file paths and granules, other parameters can be added same as the command line mode.
 ```
-"slope_path": "S1A_IW_GRDH_1SDV_20251214T141324_20251214T141349_062312_07CD9C_C253_LIA.tif"
+"inc_angle_path": "/path/to/scene_001/ellipsoid_incidence_angle.tif",
+"LIA_path": "/path/to/scene_001/local_incidence_angle.tif"
 ```
 Note that the parameters will affect the running results, and should not be modified at will.
 They can be left empty in the config file, and their default value will be used.
 
 ### Data input requirements
-SAR Data in GeoTIFF format, without speckle filter, preprocessed to sigma0. Other required auxiliary data include Water Occurrence Data and LCC maps will be downloaded automatically.
+
+The required SAR inputs are linear Gamma0 power values, not amplitude and not
+dB values. VV and VH must be separate, local, single-band GeoTIFF files on
+exactly the same grid.
+
+The optional ellipsoid incidence-angle input must be a local, single-band
+GeoTIFF. Its values must be in degrees. When it is supplied, RAPID aligns this
+continuous raster to the SAR grid with bilinear resampling and applies:
+
+```
+Gamma0_normalized = Gamma0 / cos(theta_ellipsoid)
+```
+
+Invalid incidence-angle pixels are kept at zero and excluded from
+classification. `inc_angle_path` is distinct from `LIA_path`: the former is
+the ellipsoid incidence angle used for radiometric normalization, while the
+latter is an optional local incidence angle used for terrain exclusion.
+When `inc_angle_path` is omitted, RAPID assumes VV and VH are already
+incidence-angle-normalized Gamma0 power and does not modify them.
+
+Other required auxiliary data, including Water Occurrence and land-cover
+maps, are downloaded automatically.
 
 ### Running template
 Please check the file `submit_script.sh` for an example. It is designed to be used by `sbatch` command for a Slurm scheduler.

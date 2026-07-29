@@ -3,10 +3,12 @@
 
   "filepath_list": [
     [
-      "/path/to/scene_001/Sigma0_VV.tif",
-      "/path/to/scene_001/Sigma0_VH.tif"
+      "/path/to/scene_001/Gamma0_VV.tif",
+      "/path/to/scene_001/Gamma0_VH.tif"
     ]
   ],
+
+  "inc_angle_path": null,
 
   "granules": [
     "scene_001"

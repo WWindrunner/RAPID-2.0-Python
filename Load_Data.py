@@ -2,26 +2,21 @@ import os
 import numpy as np
 from utils import *
 from AncillaryData import *
-import tempfile
-import dask
 import dask.array as da
 import rasterio
-import zipfile
-from io import BytesIO
-import requests
 from scipy import ndimage
 
 
-def tosigmma(arr):
-    return np.power(10, (2 * np.log10(arr) - 8.3))
-
-
-def readfileio(file, chunks=(1, 512, 512)):
-    # Open the GeoTIFF file using rasterio
+def readfileio(file, chunks=(1, 512, 512), label="raster"):
+    """Read one single-band GeoTIFF as a Dask array."""
     with rasterio.open(file) as src:
-        # Read the image in chunks using dask.array
+        if src.count != 1:
+            raise ValueError(
+                f"{label} must be a single-band raster, but {file} has "
+                f"{src.count} bands."
+            )
         img = da.from_array(src.read(1), chunks=chunks)
-    return (img)
+    return img
 
 
 def readhdf(file, chunks=(1, 512, 512)):
@@ -35,91 +30,26 @@ def readhdf(file, chunks=(1, 512, 512)):
     return x
 
 
-def ZipreadMemorTemp(src, args):
-    if args.datamode == 'mem':
-        temp_lp = da.from_array(src.read(1), chunks=args.chunks)
-    else:
-        kwargs = src.meta.copy()
-        temp_lp = tempfile.NamedTemporaryFile()
-        print(temp_lp.name)
-        print('open temp_lp.name')
-        with rasterio.open(temp_lp.name, 'w', **kwargs) as dst:
-            dst.write(src.read(1))
-    return temp_lp
+def validate_sar_grids(vv_path, vh_path):
+    """Require the two SAR polarizations to use exactly the same grid."""
+    with rasterio.open(vv_path) as vv, rasterio.open(vh_path) as vh:
+        if vv.count != 1 or vh.count != 1:
+            raise ValueError("VV and VH inputs must both be single-band rasters.")
 
+        mismatches = []
+        if (vv.width, vv.height) != (vh.width, vh.height):
+            mismatches.append("dimensions")
+        if vv.crs != vh.crs:
+            mismatches.append("CRS")
+        if not vv.transform.almost_equals(vh.transform):
+            mismatches.append("transform")
 
-def VV_VHread(zip_file, file_name, args, ds, newfilepath, VHindex):
-    with zip_file.open(file_name) as tiff_file:
-        with rasterio.open(BytesIO(tiff_file.read())) as src:
-            temp_lp = ZipreadMemorTemp(src, args)
-            args.ref_src = src
-            print(temp_lp)
-            if args.datamode == 'tem':
-                args.tempfiles.append(temp_lp)
-                newfilepath[VHindex] = temp_lp.name
-            else:
-                newfilepath[VHindex] = src
-                setattr(ds, args.varnames[VHindex], temp_lp)
-    return args, ds, newfilepath
-
-
-def inc_read(zip_file, file_name, args, ds):
-    with zip_file.open(file_name) as tiff_file:
-        with rasterio.open(BytesIO(tiff_file.read())) as src:
-            temp_lp = ZipreadMemorTemp(src, args)
-            print(temp_lp)
-            if args.datamode == 'tem':
-                args.tempfiles.append(temp_lp)
-            else:
-                setattr(ds, 'inc', temp_lp)
-    return args, ds
-
-
-@tim
-def retrieveRTC(url, args, ds):
-    args.tempfiles = []
-    newfilepath = [None] * 2
-    response = requests.get(url)
-    zip_file = zipfile.ZipFile(BytesIO(response.content))
-    for file_name in zip_file.namelist():
-        if 'VV' in file_name or 'HH' in file_name:
-            if '.xml' not in file_name:
-                print('reading VV or HH ' + file_name)
-                args, ds, newfilepath = VV_VHread(zip_file, file_name, args, ds, newfilepath, 0)
-        if 'VH' in file_name or 'HV' in file_name:
-            if '.xml' not in file_name:
-                print('reading VH or HV ' + file_name)
-                args, ds, newfilepath = VV_VHread(zip_file, file_name, args, ds, newfilepath, 1)
-        if 'inc_map' in file_name:
-            if '.xml' not in file_name:
-                print('reading incidence angle ' + file_name)
-                args, ds = inc_read(zip_file, file_name, args, ds)
-    return newfilepath, args, ds
-
-
-def filepathreader(ds, varnames, infilepath, chunks):
-    with rasterio.open(infilepath[0]) as src:
-        # Access the number of bands
-        num_bands = src.count
-    if num_bands > 1:
-        # VV, VH, Inc angle in one file. 
-        # make sure the Inc is the last band
-        with rasterio.open(infilepath[0]) as src:
-            for idx, name in enumerate(varnames):
-                setattr(ds, name, da.from_array(src.read(idx + 1), chunks=chunks))
-    else:
-        varnames = ['img_lp', 'img_cp']
-        pol_index = 0
-        for idx, filename in enumerate(infilepath):
-            if 'inc' in infilepath[idx] or 'INC' in infilepath[idx]:
-                setattr(ds, 'inc', readfileio(filename, chunks))
-            else:
-                setattr(ds, varnames[pol_index], readfileio(filename, chunks))
-                if 'amp' in filename or 'AMP' in filename:
-                    print(f"Transfer to sigmma: {filename}")
-                    setattr(ds, varnames[pol_index], tosigmma(getattr(ds, varnames[pol_index])))
-                pol_index += 1
-    return ds
+        if mismatches:
+            raise ValueError(
+                "VV and VH rasters are not aligned; mismatched "
+                + ", ".join(mismatches)
+                + "."
+            )
 
 
 def get_src(filepath, args):
@@ -150,10 +80,30 @@ def set_nan(ds, args):
 
 
 def normalize_inc(ds):
-    if ds.inc is not None:
-        print('Normalizing incidence angle')
-        ds.img_lp = ds.img_lp / np.cos(ds.inc) ** 2
-        ds.img_cp = ds.img_cp / np.cos(ds.inc) ** 2
+    """
+    Normalize linear Gamma0 power using ellipsoid incidence angle in degrees.
+
+    Gamma0_normalized = Gamma0 / cos(theta_ellipsoid)
+    Invalid angle pixels remain zero and therefore stay outside classification.
+    """
+    print("Normalizing Gamma0 with ellipsoid incidence angle (degrees)")
+    angle = ds.inc.astype(np.float64)
+    cos_angle = da.cos(da.deg2rad(angle))
+    # Zero is treated as invalid because aligned incidence-angle rasters use
+    # zero outside their valid source footprint.
+    valid_angle = da.isfinite(angle) & (angle > 0.0) & (angle < 90.0)
+    valid_angle = valid_angle & da.isfinite(cos_angle) & (cos_angle > 0.0)
+
+    ds.img_lp = da.where(
+        valid_angle & da.isfinite(ds.img_lp) & (ds.img_lp > 0),
+        ds.img_lp / cos_angle,
+        0,
+    )
+    ds.img_cp = da.where(
+        valid_angle & da.isfinite(ds.img_cp) & (ds.img_cp > 0),
+        ds.img_cp / cos_angle,
+        0,
+    )
     return ds
 
 
@@ -178,7 +128,26 @@ def Load_Data(args):
     wotif = args.wotif
     LCCtif = None
     oceantif = None
-    args.varnames = ['img_lp', 'img_cp', 'inc']
+
+    if len(filepath) != 2:
+        raise ValueError(
+            "Each scene must contain exactly two local single-band SAR files: "
+            "[VV, VH]."
+        )
+    inc_angle_path = getattr(args, "inc_angle_path", None)
+    input_paths = [("VV", filepath[0]), ("VH", filepath[1])]
+    if inc_angle_path:
+        input_paths.append(("incidence angle", inc_angle_path))
+    for label, path in input_paths:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"{label} input does not exist: {path}")
+    if inc_angle_path:
+        with rasterio.open(inc_angle_path) as inc_src:
+            if inc_src.count != 1:
+                raise ValueError(
+                    "Incidence angle must be a single-band raster, but "
+                    f"{inc_angle_path} has {inc_src.count} bands."
+                )
 
     def ancillary(datamode='mem'):
         return AncillaryData(
@@ -192,34 +161,38 @@ def Load_Data(args):
         pass
 
     ds = c()
-    # initial inc
-    ds.inc = None
     args.datamode = 'mem'
-    from urllib.parse import urlparse
-    if urlparse(filepath[0]).scheme == 'https' and '.tif' not in filepath[0]:
-        print('Input with ASF url ' + filepath[0])
-        infilepath, args, ds = retrieveRTC(filepath[0], args, ds)
-        print(infilepath)
-        if args.datamode != 'mem':
-            ds = filepathreader(ds, args.varnames, infilepath, args.chunks)
-        args = get_src(infilepath[0], args)
-    else:
-        infilepath = filepath
-        args = get_src(filepath[0], args)
-        args.tempfiles = []
-        ds = filepathreader(ds, args.varnames, infilepath, args.chunks)
+    infilepath = filepath
+    validate_sar_grids(filepath[0], filepath[1])
+    args = get_src(filepath[0], args)
+    args.tempfiles = []
+    ds.img_lp = readfileio(filepath[0], args.chunks, label="VV")
+    ds.img_cp = readfileio(filepath[1], args.chunks, label="VH")
+
     # Output are binary mask so just one band
     args.refmeta.update(count=1)
-    # Duplicate ds.img_lp to ds.img_cp if ds.img_cp is not exist, 08-05-2023
-    if not hasattr(ds, 'img_cp'):
-        ds.img_cp = ds.img_lp.copy()
-        args.dual_pol = False
-        print('Single-pol SAR input!')
-    else:
-        args.dual_pol = True
+    args.dual_pol = True
     #
     ds = set_nan(ds, args)
-    ds = normalize_inc(ds)
+    if inc_angle_path:
+        ds.inc = ancillary().getLocalRaster(
+            inc_angle_path, resampling="bilinear"
+        ).squeeze()
+
+        if ds.inc.shape != ds.img_lp.shape:
+            raise ValueError(
+                "Aligned incidence-angle raster shape does not match the SAR grid: "
+                f"{ds.inc.shape} != {ds.img_lp.shape}."
+            )
+        if hasattr(ds.inc, "rechunk"):
+            ds.inc = ds.inc.rechunk(ds.img_lp.chunks)
+        ds = normalize_inc(ds)
+    else:
+        print(
+            "[Load_Data] no inc_angle_path provided; assuming the input "
+            "Gamma0 power rasters are already incidence-angle normalized.",
+            flush=True,
+        )
 
     # water occurrence file
     if wotif == None:
@@ -400,7 +373,8 @@ def Load_Data(args):
         if hasattr(ds.desert_mask, "rechunk"):
             ds.desert_mask = ds.desert_mask.rechunk(ds.img_lp.chunks)
 
-    del ds.inc
+    if hasattr(ds, "inc"):
+        del ds.inc
 
     # print("img_lp chunks:", getattr(ds.img_lp, "chunks", None))
     # print("img_cp chunks:", getattr(ds.img_cp, "chunks", None))

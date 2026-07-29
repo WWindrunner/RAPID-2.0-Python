@@ -337,6 +337,9 @@ def parse(config_json=None):
     parser.add_argument('--LIA_path', type=str, default=None,
                         help='Optional precomputed LIA raster path (degree). Used if terrain_mask_path is not provided.')
 
+    parser.add_argument('--inc_angle_path', type=str, default=None,
+                        help='Optional local single-band ellipsoid incidence-angle raster in degrees. If omitted, input Gamma0 is assumed to be already normalized.')
+
     parser.add_argument('--ice_mask_path', type=str, default=None,
                         help='Optional precomputed ice raster path (binary, 1 for ice).')
 
@@ -750,7 +753,7 @@ def RAPID(*args, **kwargs):
         # terminal input:
         #   python RAPID.py vv.tif vh.tif out_dir
         # optional:
-        #   python RAPID.py vv.tif vh.tif out_dir --slope_path lia.tif --use_dem
+        #   --inc_angle_path ellipsoid_incidence_angle.tif
         filepath = [args[0], args[1]]
         OUT_PATH = args[2]
         extra_args = list(args[3:])
@@ -807,6 +810,11 @@ def RAPID(*args, **kwargs):
     os.makedirs(args.WORK_PATH, exist_ok=True)
 
     filepath_list = args.filepath_list
+    if len(filepath_list) != 1:
+        raise ValueError(
+            "RAPID currently supports exactly one scene per run. "
+            "Provide one [VV, VH] entry in filepath_list."
+        )
     previous_tmpdir = os.environ.get("TMPDIR")
     previous_dask_tmpdir = os.environ.get("DASK_TEMPORARY_DIRECTORY")
     previous_tempfile_dir = tempfile.tempdir
