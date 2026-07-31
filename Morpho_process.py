@@ -17,6 +17,12 @@ from affine import Affine
 from collections import deque
 
 
+# Morph debug: set True to write the block index and selected block outputs.
+MORPH_DEBUG_SAVE = False
+# Fill with zero-based (row, col), for example [(10, 20), (15, 8)].
+MORPH_DEBUG_BLOCKS = []
+
+
 def _read_window_from_tif(path: str, r0: int, c0: int, nRows: int, nCols: int):
     with rasterio.open(path) as src:
         win = Window(c0, r0, nCols, nRows)
@@ -971,20 +977,25 @@ def morph_block_worker(
     thCompactness,
     morph_out_dir,
     block_transform,
-    crs
+    crs,
+    debug_save=False,
 ):
     import os
     import gc
     import numpy as np
     import rasterio
 
-    DEBUG_SAVE = False
+    DEBUG_SAVE = bool(debug_save)
 
     def _save_debug(arr, name):
         if not DEBUG_SAVE:
             return
 
-        debug_dir = os.path.join(morph_out_dir, "debug")
+        debug_dir = os.path.join(
+            morph_out_dir,
+            "debug",
+            f"block_r{iR}_c{iC}",
+        )
         os.makedirs(debug_dir, exist_ok=True)
 
         out_arr = np.full(arr.shape, 255, dtype=np.uint8)
@@ -994,7 +1005,7 @@ def morph_block_worker(
 
         debug_file = os.path.join(
             debug_dir,
-            f"{name}_{iR}_{iC}.tif"
+            f"{name}.tif"
         )
 
         with rasterio.open(
@@ -1278,10 +1289,10 @@ def morph_block_worker(
         update = maskPatches & accept
         rasWB[update] = 2
         #rasWB[maskPatches] = 2 * accept[maskPatches].astype(np.float32)
-        _save_debug(rasWB, "02_after_class2")
-        
         del thPWppBlock, thPWqpBlock, CM_seed, maskPatches, accept
-        
+
+    _save_debug(rasWB, "02_after_class2")
+
     # ---- form non-PW highly credible objects ----
     maskSeeds = (rasWB == 3)
     RSeeds, CSeeds = np.where(maskSeeds)
@@ -1303,8 +1314,6 @@ def morph_block_worker(
             update = maskPatches & accept
             rasWB[update] = 3
             #rasWB[maskPatches] = 3 * accept[maskPatches].astype(np.float32)
-            _save_debug(rasWB, "03_after_class3")
-            
             del thMatOut, thPWqpBlock, maskPatches, CM_seed, accept
         else:
             WBMax = (rasWBCo > 0) & (rasWB > 2)
@@ -1321,10 +1330,10 @@ def morph_block_worker(
             update = maskPatches & accept
             rasWB[update] = 3
             #rasWB[maskPatches] = 3 * accept[maskPatches].astype(np.float32)
-            _save_debug(rasWB, "03_after_class3")
-            
             del thMatOut, maskPatches, accept
-            
+
+    _save_debug(rasWB, "03_after_class3")
+
     # ---- moderate-credible objects ----
     maskSeeds = (rasWB == 4)
     if np.any(maskSeeds) and (thpp_mod is not None):
@@ -1364,6 +1373,7 @@ def morph_block_worker(
     )
 
     rasWB[bare_sparse_candidate & (~np.isnan(rasWB))] = 0
+    _save_debug(rasWB, "05_after_bare_sparse")
 
     # ---- ice/snow pixel-level exclusion ----
     # ice_block: 1 = ice/snow candidate, 0 = keep
@@ -1376,6 +1386,8 @@ def morph_block_worker(
 
         rasWB[ice_candidate & (~np.isnan(rasWB))] = 0
 
+    _save_debug(rasWB, "06_after_ice")
+
     # ---- dark area pixel-level exclusion ----
     if desert_block is not None:
         desert_candidate = (
@@ -1386,6 +1398,8 @@ def morph_block_worker(
         )
 
         rasWB[desert_candidate & (~np.isnan(rasWB))] = 0
+
+    _save_debug(rasWB, "07_after_dark_area")
 
     # =========================================================
     # Re-categorize the water classes based on LCC and VV/VH results
@@ -1477,6 +1491,8 @@ def morph_block_worker(
                 if patch_ids.size > 0 else np.empty((0, 2), dtype=np.int32)
             )
 
+    _save_debug(rasWB, "08_after_recategorize")
+
     # remove objects with high built-up ratio
     mask2Remove = np.zeros((rows, cols), dtype=bool)
     for credibility in range(1, nCred + 1):
@@ -1490,6 +1506,7 @@ def morph_block_worker(
         )
         mask2Remove = mask2Remove | mask2Remove_i
     rasWB[mask2Remove] = 0
+    _save_debug(rasWB, "09_after_builtup")
 
     # ---- terrain object-level exclusion ----
     # Priority:
@@ -1532,7 +1549,9 @@ def morph_block_worker(
 
         rasWB[maskTerrainRemove & (~np.isnan(rasWB))] = 0
         CM[maskTerrainRemove, :] = 0
-    
+
+    _save_debug(rasWB, "10_after_terrain")
+
     # remove small objects / low compactness
     compactScore, area = compactness(CM)
 
@@ -1640,7 +1659,9 @@ def morph_block_worker(
 
         rasWB[(maskVoid | maskSmall) & (~np.isnan(rasWB))] = 0
 
+    _save_debug(rasWB, "11_after_size_compactness")
     rasWB[maskOut | (Ipp <= 0)] = np.nan
+    _save_debug(rasWB, "12_final_full_block")
 
     # ---- return only the PROCESS core ----
     core = rasWB[rs:re + 1, cs:ce + 1]
@@ -1690,6 +1711,71 @@ def morph_block_worker(
         "iC": iC,
         "file": block_file
     }
+
+
+def _write_morph_block_index(
+    path,
+    transform,
+    crs,
+    nR,
+    nC,
+    r0,
+    c0,
+    nRows,
+    nCols,
+):
+    """
+    Write a coarse block lookup raster with one pixel per morph process core.
+
+    Band 1 = unique block_id (1-based)
+    Band 2 = iR (zero-based)
+    Band 3 = iC (zero-based)
+    """
+    nodata = np.iinfo(np.uint32).max
+
+    if int(nC) > 1:
+        block_width = int(c0[1, 1] - c0[0, 1])
+    else:
+        block_width = int(nCols[0, 1])
+    if int(nR) > 1:
+        block_height = int(r0[1, 1] - r0[0, 1])
+    else:
+        block_height = int(nRows[0, 1])
+
+    coarse_transform = transform * Affine.scale(block_width, block_height)
+    profile = {
+        "driver": "GTiff",
+        "height": int(nR),
+        "width": int(nC),
+        "count": 3,
+        "dtype": "uint32",
+        "transform": coarse_transform,
+        "crs": crs,
+        "nodata": nodata,
+        "compress": "deflate",
+        "predictor": 2,
+    }
+
+    grid_rows, grid_cols = np.indices((int(nR), int(nC)), dtype=np.uint32)
+    block_ids = (
+        grid_rows * np.uint32(nC) + grid_cols + np.uint32(1)
+    ).astype(np.uint32, copy=False)
+
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.set_band_description(1, "block_id")
+        dst.set_band_description(2, "iR_zero_based")
+        dst.set_band_description(3, "iC_zero_based")
+        dst.update_tags(
+            index_base="zero-based iR/iC",
+            block_id_formula="iR * nC + iC + 1",
+            n_block_rows=int(nR),
+            n_block_cols=int(nC),
+            source_block_width_pixels=block_width,
+            source_block_height_pixels=block_height,
+        )
+        dst.write(block_ids, 1)
+        dst.write(grid_rows, 2)
+        dst.write(grid_cols, 3)
 
 
 def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
@@ -1798,6 +1884,47 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
         offset=False,
         keep_size=False,
     )
+
+    block_index_file = None
+    requested_debug_blocks = (
+        {(int(rr), int(cc)) for rr, cc in MORPH_DEBUG_BLOCKS}
+        if MORPH_DEBUG_SAVE else set()
+    )
+    invalid_debug_blocks = sorted(
+        (rr, cc)
+        for rr, cc in requested_debug_blocks
+        if rr < 0 or rr >= int(nR) or cc < 0 or cc >= int(nC)
+    )
+    if invalid_debug_blocks:
+        raise ValueError(
+            f"morphDebugBlocks outside grid {int(nR)}x{int(nC)}: "
+            f"{invalid_debug_blocks}"
+        )
+
+    if MORPH_DEBUG_SAVE:
+        block_index_file = os.path.join(dirMorph, "Morph_block_index.tif")
+        _write_morph_block_index(
+            path=block_index_file,
+            transform=ref_transform,
+            crs=ref_crs,
+            nR=nR,
+            nC=nC,
+            r0=r0,
+            c0=c0,
+            nRows=nRows,
+            nCols=nCols,
+        )
+        print(
+            f"[morph_proc_scene_main] wrote block lookup raster -> {block_index_file}",
+            flush=True,
+        )
+
+    if MORPH_DEBUG_SAVE and requested_debug_blocks:
+        print(
+            "[morph_proc_scene_main] debug blocks (zero-based): "
+            f"{sorted(requested_debug_blocks)}",
+            flush=True,
+        )
 
     # ---- batch submit instead of collecting all tasks ----
     pending_tasks = []
@@ -1938,7 +2065,8 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
                     thCompactness=thCompactness,
                     morph_out_dir=dirMorph,
                     block_transform=ref_transform,
-                    crs=ref_crs
+                    crs=ref_crs,
+                    debug_save=(iR, iC) in requested_debug_blocks,
                 )
             )
 
@@ -2003,6 +2131,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
 
     scene_pack["morph_proc"] = {
         "fileMorphOut": fileMorphOut,
+        "blockIndexFile": block_index_file,
         "thGlobal": thGlobal,
         "thGlobal_db": thGlobal_db,
         "isWindy": isWindy,
