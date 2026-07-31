@@ -694,55 +694,38 @@ def _build_coarse_transform_from_blocks(args, refmeta):
     return Affine(resX, 0.0, x0, 0.0, resY, y0)
 
 
-def _write_tif(path, arr2d, transform, crs, nodata, dtype="float32"):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    profile = {
-        "driver": "GTiff",
-        "height": int(arr2d.shape[0]),
-        "width": int(arr2d.shape[1]),
-        "count": 1,
-        "dtype": dtype,
-        "crs": crs,
-        "transform": transform,
-        "nodata": nodata,
-        "compress": "deflate",
-        "tiled": True,
-    }
-    with rasterio.open(path, "w", **profile) as dst:
-        dst.write(arr2d.astype(dtype, copy=False), 1)
-
-
-def _resample_to_ref(src_path, dst_path, refmeta, resampling=Resampling.bilinear):
+def _resample_array_to_ref(
+    src_arr,
+    src_transform,
+    src_crs,
+    dst_path,
+    refmeta,
+    nodata=255,
+    resampling=Resampling.bilinear,
+):
+    """Resample a coarse in-memory array directly into a full-resolution GeoTIFF."""
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
 
     ref_transform = refmeta["transform"]
     ref_crs = refmeta["crs"]
     ref_h = int(refmeta["height"])
     ref_w = int(refmeta["width"])
-    ref_nodata = refmeta.get("nodata", 255)
+    dst_arr = np.full((ref_h, ref_w), nodata, dtype=np.float32)
 
-    with rasterio.open(src_path) as src:
-        src_arr = src.read(1)
-        src_transform = src.transform
-        src_crs = src.crs
-        src_nodata = src.nodata
-
-        dst_arr = np.full((ref_h, ref_w), ref_nodata, dtype=np.float32)
-
-        reproject(
-            source=src_arr,
-            destination=dst_arr,
-            src_transform=src_transform,
-            src_crs=src_crs,
-            src_nodata=src_nodata,
-            dst_transform=ref_transform,
-            dst_crs=ref_crs,
-            dst_nodata=ref_nodata,
-            resampling=resampling,
-        )
+    reproject(
+        source=np.asarray(src_arr, dtype=np.float32),
+        destination=dst_arr,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        src_nodata=nodata,
+        dst_transform=ref_transform,
+        dst_crs=ref_crs,
+        dst_nodata=nodata,
+        resampling=resampling,
+    )
 
     out_profile = refmeta.copy()
-    out_profile.update(driver="GTiff", count=1, dtype="float32", nodata=ref_nodata, compress="deflate", tiled=True)
+    out_profile.update(driver="GTiff", count=1, dtype="float32", nodata=nodata, compress="deflate", tiled=True)
     with rasterio.open(dst_path, "w", **out_profile) as dst:
         dst.write(dst_arr.astype("float32", copy=False), 1)
 
@@ -796,7 +779,7 @@ def dist_th_postprocess(args, ds, nodata=255):
     """
     Python port of MATLAB dist_th (post ~200 lines):
       1) build matThI (coarse threshold maps in linear domain)
-      2) write coarse tif and resample to fine tif
+      2) resample coarse in-memory arrays directly to fine tif
       3) generate initial classification raster (Cat_init.tif) by scanning full-res blocks
       4) collect pol_water samples per class (like MATLAB pol_water{idx(cat)})
     """
@@ -807,7 +790,6 @@ def dist_th_postprocess(args, ds, nodata=255):
     colsImage = int(refmeta["width"])
 
     # ---- output file roots (aligned with your dup_args layout) ----
-    fileThCoarse_root = getattr(args, "fileThCoarse_root", os.path.join(args.dirTempPol, "ThCoarse_"))
     fileThFine_root = getattr(args, "fileThFine_root", os.path.join(args.dirTempPol, "ThFine_"))
     fileCatInit = getattr(args, "fileCatInit", os.path.join(args.dirOut, "Cat_init.tif"))
 
@@ -815,12 +797,11 @@ def dist_th_postprocess(args, ds, nodata=255):
     matThI = _build_matThI(args, ds)  # (nR,nC,nClasses)
     nR, nC, nClasses = matThI.shape
 
-    # ---- 2) write coarse threshold maps and resample to full-res ----
+    # ---- 2) resample coarse threshold maps directly to full-res ----
     coarse_transform = _build_coarse_transform_from_blocks(args, refmeta)
     crs = refmeta["crs"]
 
     for cat in range(1, nClasses + 1):
-        coarse_path = f"{fileThCoarse_root}{cat}.tif"
         fine_path = f"{fileThFine_root}{cat}.tif"
 
         print(f"interpolate the threshold map for class {cat}...")
@@ -829,15 +810,15 @@ def dist_th_postprocess(args, ds, nodata=255):
         # write nodata as 255 to match your convention (float raster with nodata=255 is ok)
         out = np.where(np.isfinite(arr), arr.astype(np.float32, copy=False), np.float32(nodata))
 
-        _write_tif(
-            coarse_path,
+        _resample_array_to_ref(
             out,
-            transform=coarse_transform,
-            crs=crs,
+            src_transform=coarse_transform,
+            src_crs=crs,
+            dst_path=fine_path,
+            refmeta=refmeta,
             nodata=nodata,
-            dtype="float32",
+            resampling=Resampling.bilinear,
         )
-        _resample_to_ref(coarse_path, fine_path, refmeta, resampling=Resampling.bilinear)
 
     # ---- 3) scan full-res and produce initial classification ----
     # MATLAB: C(end+1)=inf; idx=sort(C,'ascend');
@@ -926,7 +907,6 @@ def dist_th_postprocess(args, ds, nodata=255):
     ds.C_ext = C_ext
     ds.pol_water = pol_water
     ds.fileCatInit = fileCatInit
-    ds.fileThCoarse_root = fileThCoarse_root
     ds.fileThFine_root = fileThFine_root
 
     print(f"[dist_th] wrote threshold maps and initial classification -> {fileCatInit}")

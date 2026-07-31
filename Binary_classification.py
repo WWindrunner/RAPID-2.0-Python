@@ -16,7 +16,6 @@ from scipy.stats import multivariate_normal
 from sklearn.cluster import KMeans
 import scipy.ndimage.filters as filters
 from scipy.ndimage import median_filter
-from scipy.io import savemat, loadmat
 from rasterio.windows import Window
 from Dist_th import dist_th_window_worker, dist_th_postprocess
 from Statistics import KLD_chi2_frm_sample, validate_gmm, get_block, build_Iu_and_meanTransact
@@ -578,21 +577,6 @@ def run_init_bimodality_dask(args, ds):
     ds.AD = AD[maskKeep]
     ds.valid_bimod = valid[maskKeep]
 
-    if getattr(args, "fileSBAInitUnCat", None):
-        os.makedirs(os.path.dirname(args.fileSBAInitUnCat) or ".", exist_ok=True)
-        savemat(args.fileSBAInitUnCat, {
-            "r0Sel": ds.r0Sel,
-            "c0Sel": ds.c0Sel,
-            "nRowsSel": ds.nRowsSel,
-            "nColsSel": ds.nColsSel,
-            "thOcc": ds.thOcc,
-            "mu1": ds.mu1,
-            "Iu": ds.Iu,
-            "peakWater": ds.peakWater,
-            "medianWater": ds.medianWater,
-            "stdWater": ds.stdWater,
-        })
-
     return args, ds
 
 
@@ -605,7 +589,7 @@ def categorize_water_classes(args, ds):
     MATLAB:
       [idx,C]=kmeans(peakWater,nWaterClasses);
       remove classes with ratio < 1/nWaterClasses/2
-      save SBAInitCat.mat
+      keep categorized SBA data in memory
     """
     peak = np.asarray(ds.peakWater).reshape(-1, 1)
     nWaterClasses = int(getattr(args, "nWaterClasses", 5))
@@ -650,26 +634,12 @@ def categorize_water_classes(args, ds):
     ds.idx = idx
     ds.C = C
 
-    if getattr(args, "fileSBAInitCat", None):
-        os.makedirs(os.path.dirname(args.fileSBAInitCat) or ".", exist_ok=True)
-        savemat(args.fileSBAInitCat, {
-            "thOcc": ds.thOcc,
-            "r0Sel": ds.r0Sel,
-            "c0Sel": ds.c0Sel,
-            "nRowsSel": ds.nRowsSel,
-            "nColsSel": ds.nColsSel,
-            "mu1": ds.mu1,
-            "Iu": ds.Iu,
-            "C": ds.C,
-            "idx": ds.idx,
-        })
-
     return args, ds
 
 
 def findRange_bimodality(args, ds):
     """
-      if exist(SBAInit.mat) load else select_water_tiles + save
+      load/save the initial selection as NPZ only when useSBACache=True
     Uses ds.* already loaded by Load_Data.
     """
 
@@ -711,38 +681,40 @@ def findRange_bimodality(args, ds):
 
     if not getattr(args, "fileSBAInit", None):
         if getattr(args, "dirTempPol", None):
-            args.fileSBAInit = os.path.join(args.dirTempPol, "SBAInit.mat")
+            args.fileSBAInit = os.path.join(args.dirTempPol, "SBAInit.npz")
         elif getattr(args, "dirOut", None):
-            args.fileSBAInit = os.path.join(args.dirOut, "SBAInit.mat")
+            args.fileSBAInit = os.path.join(args.dirOut, "SBAInit.npz")
         elif getattr(args, "OUT_PATH", None):
-            args.fileSBAInit = os.path.join(args.OUT_PATH, "SBAInit.mat")
+            args.fileSBAInit = os.path.join(args.OUT_PATH, "SBAInit.npz")
         else:
             raise ValueError("Need args.fileSBAInit or one of args.dirTempPol / args.dirOut / args.OUT_PATH")
 
-    if os.path.exists(args.fileSBAInit):
-        d = loadmat(args.fileSBAInit)
-        # load into ds so downstream can use it
-        for k in ["r0Sel", "c0Sel", "nRowsSel", "nColsSel",
-                  "rWaterSeeds", "cWaterSeeds",
-                  "thOcc", "modeOcc", "medianWater", "stdWater", "peakWater"]:
-            if k in d:
-                setattr(ds, k, np.asarray(d[k]).squeeze())
+    cache_fields = [
+        "r0Sel", "c0Sel", "nRowsSel", "nColsSel",
+        "rWaterSeeds", "cWaterSeeds",
+        "thOcc", "modeOcc", "medianWater", "stdWater", "peakWater",
+    ]
+    use_cache = bool(getattr(args, "useSBACache", False))
+
+    if use_cache and os.path.exists(args.fileSBAInit):
+        with np.load(args.fileSBAInit, allow_pickle=False) as cached:
+            missing = [name for name in cache_fields if name not in cached]
+            if missing:
+                raise ValueError(
+                    f"Incomplete SBA cache {args.fileSBAInit}; missing: {missing}"
+                )
+            for name in cache_fields:
+                setattr(ds, name, np.asarray(cached[name]).squeeze())
+        print(f"loaded SBA cache: {args.fileSBAInit}", flush=True)
     else:
         args, ds = select_water_tiles(args, ds)
-        os.makedirs(os.path.dirname(args.fileSBAInit) or ".", exist_ok=True)
-        savemat(args.fileSBAInit, {
-            "r0Sel": ds.r0Sel,
-            "c0Sel": ds.c0Sel,
-            "nRowsSel": ds.nRowsSel,
-            "nColsSel": ds.nColsSel,
-            "rWaterSeeds": ds.rWaterSeeds,
-            "cWaterSeeds": ds.cWaterSeeds,
-            "thOcc": ds.thOcc,
-            "modeOcc": ds.modeOcc,
-            "medianWater": ds.medianWater,
-            "stdWater": ds.stdWater,
-            "peakWater": ds.peakWater,
-        })
+        if use_cache:
+            os.makedirs(os.path.dirname(args.fileSBAInit) or ".", exist_ok=True)
+            np.savez_compressed(
+                args.fileSBAInit,
+                **{name: np.asarray(getattr(ds, name)) for name in cache_fields},
+            )
+            print(f"saved SBA cache: {args.fileSBAInit}", flush=True)
 
     nWindows = int(np.size(getattr(ds, "r0Sel", np.array([]))))
     print(f"detected {nWindows} initial windows for sampling")
@@ -751,7 +723,7 @@ def findRange_bimodality(args, ds):
 
 
 def createSampleMapSBA(
-    fileSampleMap: str,
+    fileSampleMap: str | None,
     ds,
     thProb,      # per-window array, same length as r0/c0
     r0, c0,      # per-window pixel offsets (0-based)
@@ -759,13 +731,15 @@ def createSampleMapSBA(
     Iu,          # per-window Iu threshold in dB (NaN -> inf)
     showProg: bool = False,
     ref_raster_path: str | None = None,  # to fetch transform/crs/shape
+    write_sample_map: bool = False,
 ):
     """
     Returns:
       pol_water: 1D numpy array of linear I values sampled from all windows.
 
     Notes:
-      - Writes a uint8 GeoTIFF sample map:
+      - Always returns the sampled intensities in memory.
+      - Optionally writes a diagnostic uint8 GeoTIFF sample map:
           1 = sample pixel
           0 = evaluated but not sample (inside written windows)
           255 = nodata elsewhere (not touched)
@@ -787,41 +761,40 @@ def createSampleMapSBA(
     Iu = Iu.copy()
     Iu[np.isnan(Iu)] = np.inf
 
-    # Determine output raster geometry from ref raster (recommended)
-    if ref_raster_path is None:
-        # Common in your framework: args.filepath[0]
-        # If you don't pass ref_raster_path, you'll get a clear error here.
-        raise ValueError("ref_raster_path is required to write a georeferenced GeoTIFF sample map.")
+    dst = None
+    if write_sample_map:
+        if not fileSampleMap:
+            raise ValueError("fileSampleMap is required when write_sample_map=True.")
+        if ref_raster_path is None:
+            raise ValueError("ref_raster_path is required when write_sample_map=True.")
 
-    with rasterio.open(ref_raster_path) as ref:
-        rowsImage, colsImage = ref.height, ref.width
-        transform = ref.transform
-        crs = ref.crs
+        with rasterio.open(ref_raster_path) as ref:
+            rowsImage, colsImage = ref.height, ref.width
+            transform = ref.transform
+            crs = ref.crs
 
-    # Recreate output file
-    if os.path.exists(fileSampleMap):
-        os.remove(fileSampleMap)
+        os.makedirs(os.path.dirname(fileSampleMap) or ".", exist_ok=True)
+        if os.path.exists(fileSampleMap):
+            os.remove(fileSampleMap)
 
-    profile = {
-        "driver": "GTiff",
-        "height": rowsImage,
-        "width": colsImage,
-        "count": 1,
-        "dtype": "uint8",
-        "crs": crs,
-        "transform": transform,
-        "nodata": 255,
-        "compress": "deflate",
-        "tiled": True,
-        "blockxsize": 256,
-        "blockysize": 256,
-    }
-
-    # Create and fill with nodata=255
-    with rasterio.open(fileSampleMap, "w", **profile) as dst:
-        # fill whole raster with 255 once (like MATLAB leaving nodata elsewhere)
+        profile = {
+            "driver": "GTiff",
+            "height": rowsImage,
+            "width": colsImage,
+            "count": 1,
+            "dtype": "uint8",
+            "crs": crs,
+            "transform": transform,
+            "nodata": 255,
+            "compress": "deflate",
+            "tiled": True,
+            "blockxsize": 256,
+            "blockysize": 256,
+        }
+        dst = rasterio.open(fileSampleMap, "w", **profile)
         dst.write(np.full((rowsImage, colsImage), 255, dtype=np.uint8), 1)
 
+    try:
         pol_list = []
 
         for w in range(nWindows):
@@ -852,12 +825,16 @@ def createSampleMapSBA(
             if np.any(isSample):
                 pol_list.append(I[isSample].astype(np.float64, copy=False))
 
-            # write window: 0/1 inside this window, leave others as nodata
-            win = Window(col_off=cc, row_off=rr, width=ww, height=hh)
-            dst.write(isSample.astype(np.uint8), 1, window=win)
+            if dst is not None:
+                # write window: 0/1 inside this window, leave others as nodata
+                win = Window(col_off=cc, row_off=rr, width=ww, height=hh)
+                dst.write(isSample.astype(np.uint8), 1, window=win)
 
         if showProg:
             print()
+    finally:
+        if dst is not None:
+            dst.close()
 
     if len(pol_list) == 0:
         return np.array([], dtype=np.float64)
@@ -1068,7 +1045,7 @@ def generate_initial_sample_maps(
 
         # 1) sample map + pol_water
         pol_water = createSampleMapSBA(
-            fileSampleMap=fileSampleMap,
+            fileSampleMap=fileSampleMap if save_sample_map else None,
             ds=ds,
             thProb=thOccCat,
             r0=r0Cat, c0=c0Cat,
@@ -1076,6 +1053,7 @@ def generate_initial_sample_maps(
             Iu=IuCat,
             showProg=showProg,
             ref_raster_path=args.filepath[0],
+            write_sample_map=save_sample_map,
         )
 
         pol_water_by_cat[i - 1] = pol_water
@@ -1127,20 +1105,6 @@ def generate_initial_sample_maps(
             os.remove(fileSampleMap)
         if os.path.exists(fileSampleDist):
             os.remove(fileSampleDist)
-
-    if not save_sample_map:
-        for idx0 in np.where(~maskInvalidCat)[0]:
-            i = idx0 + 1
-            fileSampleMap = f"{fileSampleMap_root}{i}.tif"
-            if os.path.exists(fileSampleMap):
-                os.remove(fileSampleMap)
-
-    if not save_sample_dist:
-        for idx0 in np.where(~maskInvalidCat)[0]:
-            i = idx0 + 1
-            fileSampleDist = os.path.join(dirTempPol, f"SampleDist_{i}.png")
-            if os.path.exists(fileSampleDist):
-                os.remove(fileSampleDist)
 
     return {
         "pol_water_by_cat": pol_water_by_cat,

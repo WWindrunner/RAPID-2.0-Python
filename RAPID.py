@@ -205,8 +205,8 @@ def parse(config_json=None):
     parser.add_argument('--rec_windowsWater', type=int, default=150,
                         help='Recommended number of initialization windows to keep. Default 150.')
 
-    parser.add_argument('--writeSampleMap', type=_str2bool, default=True,
-                        help='Write initial SBA sample maps (default: True).')
+    parser.add_argument('--writeSampleMap', type=_str2bool, default=False,
+                        help='Write diagnostic SBA sample maps (default: False).')
     parser.add_argument('--showProg', type=_str2bool, default=True,
                         help='Show progress percentage for SBA seed selection.')
 
@@ -224,10 +224,10 @@ def parse(config_json=None):
                         help='Remove categories if NSE < thNSE. Default 0.7.')
     parser.add_argument('--thR2', type=float, default=0.8,
                         help='Remove categories if R2 < thR2. Default 0.8.')
-    parser.add_argument('--writeSampleDist', type=_str2bool, default=True,
-                        help='Write chi-square vs empirical distribution figures for each category. Default True.')
+    parser.add_argument('--writeSampleDist', type=_str2bool, default=False,
+                        help='Write diagnostic chi-square vs empirical distribution figures. Default False.')
     parser.add_argument('--useSBACache', type=_str2bool, default=False,
-                        help='Whether to load SBA cached intermediate results (default: False) (WARNING: not implemented).')
+                        help='Read/write the initial SBA selection cache in NPZ format (default: False).')
 
     # -----------------------------
     # dist_th / worker thresholds
@@ -390,12 +390,10 @@ def dup_args(args, filepath, granuele_name, wotif=None):
     args_new.wotif = wotif
 
     args_new.dirOut = os.path.join(args_new.WORK_PATH, granuele_name)
-    args_new.fileSampleMap = os.path.join(args_new.dirOut, 'SampleMap.tif')
     args_new.logFile = os.path.join(args_new.dirOut, 'sta_log.csv')
 
     # scene-level temp root
     args_new.dirTempPol = os.path.join(args_new.dirOut, "TempPol")
-    args_new.fileThCoarse_root = os.path.join(args_new.dirTempPol, "ThCoarse_")
     args_new.fileThFine_root = os.path.join(args_new.dirTempPol, "ThFine_")
     args_new.fileCatInit = os.path.join(args_new.dirOut, "Cat_init.tif")
 
@@ -552,17 +550,9 @@ def _make_pol_args(args_scene, pol):
     args_pol.dirTempPol = os.path.join(args_scene.dirOut, f"TempPol_{pol}")
     os.makedirs(args_pol.dirTempPol, exist_ok=True)
 
-    args_pol.fileSBAInit = os.path.join(args_pol.dirTempPol, f"SBAInit_{pol}.mat")
-    args_pol.fileSBAInitCat = os.path.join(args_pol.dirTempPol, f"SBAInitCat_{pol}.mat")
-
-    args_pol.fileSampleMap = os.path.join(args_pol.dirTempPol, f"SampleMap_{pol}.tif")
-    args_pol.fileThCoarse_root = os.path.join(args_pol.dirTempPol, f"ThCoarse_{pol}_")
+    args_pol.fileSBAInit = os.path.join(args_pol.dirTempPol, f"SBAInit_{pol}.npz")
     args_pol.fileThFine_root = os.path.join(args_pol.dirTempPol, f"ThFine_{pol}_")
     args_pol.fileCatInit = os.path.join(args_pol.dirTempPol, f"Cat_init_{pol}.tif")
-
-    # optional files for later stages / debugging
-    args_pol.fileSBAInitUnCat = os.path.join(args_pol.dirTempPol, f"SBAInitUnCat_{pol}.mat")
-    args_pol.fileOutBinary = os.path.join(args_pol.dirTempPol, f"Binary_{pol}.tif")
 
     return args_pol
 
