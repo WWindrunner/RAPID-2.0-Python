@@ -47,6 +47,7 @@ def normalize_args(args):
         "Iter", "showDist", "writeSampleMap", "showProg", "showProgress",
         "imported", "optIterAlg", "bInitialized", "bExport",
         "floodimage", "failed", "writeSampleDist", "useSBACache", "resume_morph",
+        "resume_morph_pre",
         "use_dem",
     ]
     for name in bool_fields:
@@ -264,6 +265,13 @@ def parse(config_json=None):
     # -----------------------------
     parser.add_argument('--resume_morph', type=_str2bool, default=False,
                         help='If True, skip binary classification when Cat_init and ThFine outputs already exist, and run morph directly.')
+
+    parser.add_argument(
+        '--resume_morph_pre',
+        type=_str2bool,
+        default=False,
+        help='If True, load the morph_pre NPZ checkpoint when available and continue with final morph blocks.',
+    )
 
     parser.add_argument('--morphPreBlockSize', type=int, default=1000,
                         help='Block size for morph_pre. Default 1000.')
@@ -674,8 +682,10 @@ def _load_sigma2_cache(args_pol):
     if not os.path.exists(cache_file):
         return None
 
-    data = np.load(cache_file)
-    return np.asarray(data["sigma2"], dtype=np.float64).reshape(-1)
+    with np.load(cache_file, allow_pickle=False) as data:
+        if "sigma2" not in data:
+            raise ValueError(f"Invalid sigma2 cache (missing sigma2): {cache_file}")
+        return np.asarray(data["sigma2"], dtype=np.float64).reshape(-1)
 
 
 @tim

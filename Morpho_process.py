@@ -250,6 +250,55 @@ def morph_pre_scene(scene_pack, blockSize=None):
 
     dirMorph = getattr(args_co, "dirMorph", os.path.join(args_co.dirOut, "Morph"))
     os.makedirs(dirMorph, exist_ok=True)
+    fileOut = os.path.join(dirMorph, "hi_cred_bimod_th.npz")
+
+    if bool(getattr(args_co, "resume_morph_pre", False)):
+        if os.path.exists(fileOut):
+            with np.load(fileOut, allow_pickle=False) as checkpoint:
+                required = {"thBimodal", "isWindy"}
+                missing = sorted(required.difference(checkpoint.files))
+                if missing:
+                    raise ValueError(
+                        f"Incomplete morph_pre checkpoint {fileOut}; "
+                        f"missing fields: {missing}"
+                    )
+
+                thBimodal = np.asarray(
+                    checkpoint["thBimodal"], dtype=float
+                ).reshape(-1)
+                isWindy = int(
+                    np.asarray(checkpoint["isWindy"]).reshape(-1)[0]
+                )
+                VHDetectedHigh = int(
+                    np.asarray(
+                        checkpoint["VHDetectedHigh"]
+                        if "VHDetectedHigh" in checkpoint.files else 0
+                    ).reshape(-1)[0]
+                )
+                VHDetected = int(
+                    np.asarray(
+                        checkpoint["VHDetected"]
+                        if "VHDetected" in checkpoint.files else 0
+                    ).reshape(-1)[0]
+                )
+
+            scene_pack["morph_pre"] = {
+                "fileHiCredBimod": fileOut,
+                "thBimodal": thBimodal,
+                "isWindy": isWindy,
+                "VHDetectedHigh": VHDetectedHigh,
+                "VHDetected": VHDetected,
+            }
+            print(
+                f"[morph_pre_scene] loaded checkpoint -> {fileOut}",
+                flush=True,
+            )
+            return scene_pack
+
+        print(
+            f"[morph_pre_scene] checkpoint not found; recomputing -> {fileOut}",
+            flush=True,
+        )
 
     fileWB_co = getattr(args_co, "fileCatInit", os.path.join(args_co.dirOut, "Cat_init.tif"))
 
@@ -391,12 +440,14 @@ def morph_pre_scene(scene_pack, blockSize=None):
 
     # --------------------------------------------------
 
-    fileOut = os.path.join(dirMorph, "hi_cred_bimod_th.npz")
-    #np.savez(
-    #    fileOut,
-    #    thBimodal=thBimodal,
-    #    isWindy=isWindy
-    #)
+    np.savez_compressed(
+        fileOut,
+        thBimodal=np.asarray(thBimodal, dtype=np.float64),
+        isWindy=np.asarray(isWindy, dtype=np.uint8),
+        VHDetectedHigh=np.asarray(VHDetectedHigh, dtype=np.int64),
+        VHDetected=np.asarray(VHDetected, dtype=np.int64),
+    )
+    print(f"[morph_pre_scene] saved checkpoint -> {fileOut}", flush=True)
 
     if thBimodal.size > 0:
         finite = thBimodal[np.isfinite(thBimodal)]
