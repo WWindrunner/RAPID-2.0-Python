@@ -257,69 +257,25 @@ def Load_Data(args):
     #    nodata=255
     #)
 
-    # terrain exclusion ancillary data
-    # Priority:
-    # 1) user-provided terrain_mask_path
-    # 2) user-provided slope_path
-    # 3) DEM-derived terrain mask, experimental
-    # 4) skip terrain exclusion
-    ds.terrain_mask = None
-    ds.slope = None
+    # Local incidence angle exclusion data
+    ds.lia = None
     ds.desert_mask = None
 
-    terrain_mask_path = getattr(args, "terrain_mask_path", None)
-    slope_path = getattr(args, "slope_path", None)
-    use_dem = getattr(args, "use_dem", False)
-
-    # ---- 1) existing terrain mask ----
-    if terrain_mask_path is not None:
-        print(f"[Load_Data] reading terrain mask: {terrain_mask_path}", flush=True)
-        ds.terrain_mask = readfileio(terrain_mask_path, args.chunks)
-
-        if hasattr(ds.terrain_mask, "rechunk"):
-            ds.terrain_mask = ds.terrain_mask.rechunk(ds.img_lp.chunks)
-
-    # ---- 2) existing slope raster ----
-    elif slope_path is not None:
+    lia_path = getattr(args, "LIA_path", None)
+    if lia_path is not None:
+        print(f"[Load_Data] reading LIA raster: {lia_path}", flush=True)
         if args.datamode == 'mem':
-            setattr(ds, 'slope', ancillary().getLocalRaster(slope_path, resampling="bilinear").squeeze())
+            ds.lia = ancillary().getLocalRaster(lia_path, resampling="bilinear").squeeze()
         else:
-            tempfileSlope = ancillary(datamode=args.datamode).getLocalRaster(slope_path, resampling="bilinear")
-            setattr(ds, 'slope', readhdf(tempfileSlope.name, args.chunks).squeeze())
-            args.tempfiles.append(tempfileSlope)
+            tempfileLIA = ancillary(datamode=args.datamode).getLocalRaster(lia_path, resampling="bilinear")
+            ds.lia = readhdf(tempfileLIA.name, args.chunks).squeeze()
+            args.tempfiles.append(tempfileLIA)
 
-        if hasattr(ds.slope, "rechunk"):
-            ds.slope = ds.slope.rechunk(ds.img_lp.chunks)
-
-    # ---- 3) DEM-derived terrain mask, experimental ----
-    elif use_dem:
-        print("[Load_Data] preparing DEM-derived terrain mask", flush=True)
-
-        if args.datamode == 'mem':
-            ds.terrain_mask = (
-                ancillary()
-                .getTerrainMask(
-                    slope_th=getattr(args, "terrain_slope_th", 20.0),
-                    dem_res=getattr(args, "dem_res", 90.0),
-                )
-                .squeeze()
-            )
-        else:
-            tempfileTerrain = (
-                ancillary(datamode=args.datamode)
-                .getTerrainMask(
-                    slope_th=getattr(args, "terrain_slope_th", 20.0),
-                    dem_res=getattr(args, "dem_res", 90.0),
-                )
-            )
-            ds.terrain_mask = readhdf(tempfileTerrain.name, args.chunks).squeeze()
-            args.tempfiles.append(tempfileTerrain)
-
-        if hasattr(ds.terrain_mask, "rechunk"):
-            ds.terrain_mask = ds.terrain_mask.rechunk(ds.img_lp.chunks)
+        if hasattr(ds.lia, "rechunk"):
+            ds.lia = ds.lia.rechunk(ds.img_lp.chunks)
 
     else:
-        print("[Load_Data] terrain exclusion disabled", flush=True)
+        print("[Load_Data] LIA exclusion disabled", flush=True)
 
     # Snow/ice mask
     ice_mask_path = getattr(args, "ice_mask_path", None)

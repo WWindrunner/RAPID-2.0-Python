@@ -48,7 +48,6 @@ def normalize_args(args):
         "imported", "optIterAlg", "bInitialized", "bExport",
         "floodimage", "failed", "writeSampleDist", "useSBACache", "resume_morph",
         "resume_morph_pre",
-        "use_dem",
     ]
     for name in bool_fields:
         if hasattr(args, name):
@@ -71,8 +70,7 @@ def normalize_args(args):
         "maxENL", "thKLD", "thNSE", "thR2",
         "distThDist2Mean", "distThAD",
         "morphPreAD", "morphPreRH", "morphPreDist2Mean",
-        "thInund", "rInund", "rProb", "terrain_slope_th", "dem_res",
-        "LIA_th"
+        "thInund", "rInund", "rProb", "LIA_th"
     ]
     for name in float_fields:
         if hasattr(args, name):
@@ -128,12 +126,6 @@ def normalize_args(args):
 
     if hasattr(args, "blockSizeMorph"):
         args.morphPreBlockSize = int(args.blockSizeMorph)
-
-    if hasattr(args, "LIA_path"):
-        args.slope_path = args.LIA_path
-
-    if hasattr(args, "LIA_th"):
-        args.terrain_slope_th = args.LIA_th
 
     return args
 
@@ -331,19 +323,10 @@ def parse(config_json=None):
                         help='Block size for morphology stage. Default 1000.')
 
     # -----------------------------
-    # terrain exclusion parameters
+    # LIA exclusion parameters
     # -----------------------------
-    parser.add_argument('--use_dem', action='store_true', default=False,
-                        help='Enable DEM-derived terrain exclusion mask generation. Experimental. Default disabled.')
-
-    parser.add_argument('--terrain_mask_path', type=str, default=None,
-                        help='Optional terrain exclusion mask raster path. Highest priority if provided.')
-
-    parser.add_argument('--slope_path', type=str, default=None,
-                        help='Optional precomputed slope raster path (degree). Not used anymore, replaced by LIA_path.')
-
     parser.add_argument('--LIA_path', type=str, default=None,
-                        help='Optional precomputed LIA raster path (degree). Used if terrain_mask_path is not provided.')
+                        help='Optional local incidence angle raster path in degrees for exclusion.')
 
     parser.add_argument('--inc_angle_path', type=str, default=None,
                         help='Optional local single-band ellipsoid incidence-angle raster in degrees. If omitted, input Gamma0 is assumed to be already normalized.')
@@ -354,14 +337,8 @@ def parse(config_json=None):
     parser.add_argument('--desert_mask_path', type=str, default=None,
                         help='Optional precomputed dark area raster path (binary, 1 for dark area).')
 
-    parser.add_argument('--terrain_slope_th', type=float, default=55.0,
-                        help='Slope threshold in degrees for terrain exclusion. Not used anymore, replaced by LIA_th.')
-
     parser.add_argument('--LIA_th', type=float, default=55.0,
                         help='LIA threshold in degrees for mountain shadow exclusion. Default 55.0.')
-
-    parser.add_argument('--dem_res', type=float, default=90.0,
-                        help='DEM processing resolution in meters for terrain mask generation. Larger values are faster and use less memory. Default 90.0.')
 
     # ---- current workflow / io ----
     parser.add_argument('--OUT_PATH', type=str, default='.')
@@ -773,7 +750,7 @@ def RAPID(*args, **kwargs):
 
             key = key[2:]
 
-            # flag argument, e.g. --use_dem
+            # flag argument
             if i + 1 >= len(extra_args) or (
                 isinstance(extra_args[i + 1], str)
                 and extra_args[i + 1].startswith("--")

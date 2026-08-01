@@ -1010,8 +1010,8 @@ def morph_block_worker(
     Iqp_block,
     LCC_block,
     water_occ_block,
-    terrain_mask_block,
-    slope_block,
+    lia_block,
+    lia_th,
     ice_block,
     desert_block,
     nCatPP,
@@ -1415,17 +1415,6 @@ def morph_block_worker(
 
     _save_debug(rasWB, "04_before_cleanup")
 
-    # ---- bare/sparse vegetation pixel-level exclusion ----
-    # ESA WorldCover: 60 = Bare / sparse vegetation
-    # Do not remove areas with water occurrence > 5.
-    bare_sparse_candidate = (
-            (LCC == 60)
-            & (water_occ <= 5)
-    )
-
-    rasWB[bare_sparse_candidate & (~np.isnan(rasWB))] = 0
-    _save_debug(rasWB, "05_after_bare_sparse")
-
     # ---- ice/snow pixel-level exclusion ----
     # ice_block: 1 = ice/snow candidate, 0 = keep
     if ice_block is not None:
@@ -1437,20 +1426,20 @@ def morph_block_worker(
 
         rasWB[ice_candidate & (~np.isnan(rasWB))] = 0
 
-    _save_debug(rasWB, "06_after_ice")
+    _save_debug(rasWB, "05_after_ice")
 
-    # ---- dark area pixel-level exclusion ----
+    # ---- dark-area bare/sparse vegetation pixel-level exclusion ----
+    # ESA WorldCover: 60 = Bare / sparse vegetation.
     if desert_block is not None:
         desert_candidate = (
                 np.isfinite(desert_block)
                 & (desert_block > 0)
-                & (water_occ <= 5)
-                & (LCC != 80)
+                & (LCC == 60)
         )
 
         rasWB[desert_candidate & (~np.isnan(rasWB))] = 0
 
-    _save_debug(rasWB, "07_after_dark_area")
+    _save_debug(rasWB, "06_after_dark_area_bare_sparse")
 
     # =========================================================
     # Re-categorize the water classes based on LCC and VV/VH results
@@ -1542,7 +1531,7 @@ def morph_block_worker(
                 if patch_ids.size > 0 else np.empty((0, 2), dtype=np.int32)
             )
 
-    _save_debug(rasWB, "08_after_recategorize")
+    _save_debug(rasWB, "07_after_recategorize")
 
     # remove objects with high built-up ratio
     mask2Remove = np.zeros((rows, cols), dtype=bool)
@@ -1557,32 +1546,25 @@ def morph_block_worker(
         )
         mask2Remove = mask2Remove | mask2Remove_i
     rasWB[mask2Remove] = 0
-    _save_debug(rasWB, "09_after_builtup")
+    _save_debug(rasWB, "08_after_builtup")
 
-    # ---- terrain object-level exclusion ----
-    # Priority:
-    # 1) terrain_mask_block: 1 = terrain/shadow candidate
-    # 2) slope_block: local incidence angle / slope, use threshold
-    terrain_candidate = None
+    # ---- LIA object-level exclusion ----
+    lia_candidate = None
+    if lia_block is not None:
+        lia_candidate = (
+                np.isfinite(lia_block)
+                & (lia_block > lia_th)
+                & (water_occ <= 5)
+        )
 
-    if terrain_mask_block is not None:
-        terrain_candidate = np.isfinite(terrain_mask_block) & (terrain_mask_block > 0)
-    elif slope_block is not None:
-        lia_th = 55.0
-        terrain_candidate = np.isfinite(slope_block) & (slope_block > lia_th)
-
-    if terrain_candidate is not None:
-        # Only treat high-angle terrain in low water-occurrence areas as exclusion candidate
-        terrain_candidate = terrain_candidate & (water_occ <= 5)
-
-        terrain_overlap_th = 0.5
-        maskTerrainRemove = np.zeros((rows, cols), dtype=bool)
+        lia_overlap_th = 0.35
+        maskLIARemove = np.zeros((rows, cols), dtype=bool)
 
         for credibility in range(1, nCred + 1):
             CMc = CM[:, :, credibility - 1]
 
-            # Only check objects intersecting terrain_candidate
-            ids_hit = np.unique(CMc[terrain_candidate & (CMc > 0)])
+            # Only check objects intersecting the high-LIA candidate mask.
+            ids_hit = np.unique(CMc[lia_candidate & (CMc > 0)])
             if ids_hit.size == 0:
                 continue
 
@@ -1592,16 +1574,16 @@ def morph_block_worker(
                 if obj_area == 0:
                     continue
 
-                terrain_area = np.count_nonzero(obj_mask & terrain_candidate)
-                terrain_ratio = terrain_area / obj_area
+                lia_area = np.count_nonzero(obj_mask & lia_candidate)
+                lia_ratio = lia_area / obj_area
 
-                if terrain_ratio >= terrain_overlap_th:
-                    maskTerrainRemove |= obj_mask
+                if lia_ratio >= lia_overlap_th:
+                    maskLIARemove |= obj_mask
 
-        rasWB[maskTerrainRemove & (~np.isnan(rasWB))] = 0
-        CM[maskTerrainRemove, :] = 0
+        rasWB[maskLIARemove & (~np.isnan(rasWB))] = 0
+        CM[maskLIARemove, :] = 0
 
-    _save_debug(rasWB, "10_after_terrain")
+    _save_debug(rasWB, "09_after_lia_exclusion")
 
     # remove small objects / low compactness
     compactScore, area = compactness(CM)
@@ -1710,9 +1692,9 @@ def morph_block_worker(
 
         rasWB[(maskVoid | maskSmall) & (~np.isnan(rasWB))] = 0
 
-    _save_debug(rasWB, "11_after_size_compactness")
+    _save_debug(rasWB, "10_after_size_compactness")
     rasWB[maskOut | (Ipp <= 0)] = np.nan
-    _save_debug(rasWB, "12_final_full_block")
+    _save_debug(rasWB, "11_final_full_block")
 
     # ---- return only the PROCESS core ----
     core = rasWB[rs:re + 1, cs:ce + 1]
@@ -1749,10 +1731,8 @@ def morph_block_worker(
     if thpp_mod is not None:
         del thpp_mod
     del CM, lstRealCred, core, out
-    if terrain_mask_block is not None:
-        del terrain_mask_block
-    if slope_block is not None:
-        del slope_block
+    if lia_block is not None:
+        del lia_block
     gc.collect()
 
     # print(f"[morph_block_worker] finished block ({iR + 1},{iC + 1})", flush=True)
@@ -1907,25 +1887,13 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     rNWB = np.asarray(getattr(args_vv, "rNWB_morph", [0.3, 0.4, 0.4, 0.4, 0.4]), dtype=float)
     thSize = np.asarray(getattr(args_vv, "thSize_morph", [10, 10, 10, 10, 10]), dtype=float)
     thCompactness = np.asarray(getattr(args_vv, "thCompactness", [0, 0, 0.25, 1, 2]), dtype=float)
+    lia_th = float(getattr(args_vv, "LIA_th", 55.0))
 
     with rasterio.open(fileWB_vv) as src:
         rowsImage = src.height
         colsImage = src.width
         ref_transform = src.transform
         ref_crs = src.crs
-
-    # ---- terrain slope from DEM ----
-    if hasattr(ds_vv, "dem"):
-        print("[morph_proc_scene_main] calculating slope from DEM", flush=True)
-
-        slope_all = calc_slope(ds_vv.dem, ref_transform, ref_crs)
-
-        # align chunks with SAR
-        if hasattr(slope_all, "rechunk"):
-            slope_all = slope_all.rechunk(ds_vv.img_lp.chunks)
-
-    else:
-        slope_all = None
 
     nR, nC, r0, c0, nRows, nCols, _, _ = get_block(
         rowsImage,
@@ -2047,19 +2015,12 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
             LCC_block = ds_vv.land_cover[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
             water_occ_block = ds_vv.water_occurrence[r0Load:r0Load + nRowsLoad, c0Load:c0Load + nColsLoad]
 
-            terrain_mask_block = None
-            slope_block = None
+            lia_block = None
             ice_block = None
             desert_block = None
 
-            if getattr(ds_vv, "terrain_mask", None) is not None:
-                terrain_mask_block = ds_vv.terrain_mask[
-                    r0Load:r0Load + nRowsLoad,
-                    c0Load:c0Load + nColsLoad
-                ]
-
-            if getattr(ds_vv, "slope", None) is not None:
-                slope_block = ds_vv.slope[
+            if getattr(ds_vv, "lia", None) is not None:
+                lia_block = ds_vv.lia[
                     r0Load:r0Load + nRowsLoad,
                     c0Load:c0Load + nColsLoad
                 ]
@@ -2098,8 +2059,8 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
                     Iqp_block=Iqp_block,
                     LCC_block=LCC_block,
                     water_occ_block=water_occ_block,
-                    terrain_mask_block=terrain_mask_block,
-                    slope_block=slope_block,
+                    lia_block=lia_block,
+                    lia_th=lia_th,
                     ice_block=ice_block,
                     desert_block=desert_block,
                     nCatPP=nCatPP,
@@ -2175,8 +2136,8 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
         except Exception:
             pass
         
-    if hasattr(ds_vv, "terrain_mask"):
-        del ds_vv.terrain_mask
+    if hasattr(ds_vv, "lia"):
+        del ds_vv.lia
 
     print("[morph_proc_scene_main] cleanup finished", flush=True)
 
