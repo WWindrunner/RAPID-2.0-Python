@@ -302,7 +302,7 @@ def parse(config_json=None):
                         help='Percentiles of bimodality thresholds. Default [50, 25, 10].')
 
     parser.add_argument('--rNWB_WST', nargs='*', type=float, default=[0.3, 0.6, 0.5, 0.4, 0.4],
-                        help='Maximum built-up fraction allowed for each credibility level in morphology. Default [0.3, 0.3, 0.4, 0.4, 0.4].')
+                        help='Maximum built-up fraction allowed for each credibility level in morphology. Default [0.3, 0.6, 0.5, 0.4, 0.4].')
 
     parser.add_argument('--thSizeMorph', nargs='*', type=float, default=[10, 10, 10, 10, 50],
                         help='Minimum object size for each credibility level in morphology. Default [10, 10, 10, 10, 50].')
@@ -337,8 +337,8 @@ def parse(config_json=None):
     parser.add_argument('--desert_mask_path', type=str, default=None,
                         help='Optional precomputed dark area raster path (binary, 1 for dark area).')
 
-    parser.add_argument('--LIA_th', type=float, default=55.0,
-                        help='LIA threshold in degrees for mountain shadow exclusion. Default 55.0.')
+    parser.add_argument('--LIA_th', type=float, default=50.0,
+                        help='LIA threshold in degrees for mountain shadow exclusion. Default 50.0.')
 
     # ---- current workflow / io ----
     parser.add_argument('--OUT_PATH', type=str, default='.')

@@ -1585,112 +1585,69 @@ def morph_block_worker(
 
     _save_debug(rasWB, "09_after_lia_exclusion")
 
-    # remove small objects / low compactness
-    compactScore, area = compactness(CM)
+    # Rebuild final objects after all exclusions. Process one final class at a
+    # time so exclusion-created fragments are measured as separate objects
+    # without retaining another five-layer connected-component cube.
+    cleanup_structure = ndimage.generate_binary_structure(2, 2)  # 8-connectivity
+    thSize_arr = np.asarray(thSize, dtype=float)
+    thCompactness_arr = np.asarray(thCompactness, dtype=float)
 
     if DEBUG_SAVE:
-        print("Compactness statistics by credibility layer:")
-
-        for credibility in range(1, nCred + 1):
-            try:
-                comp_arr = compactScore[credibility - 1]
-                area_arr = area[credibility - 1]
-            except Exception:
-                print(f"  credibility={credibility}: compactness/area unavailable")
-                continue
-
-            if comp_arr is None or len(comp_arr) == 0:
-                print(f"  credibility={credibility}: no patches")
-                continue
-
-            compact_vals = np.asarray(comp_arr[:, 1], dtype=float)
-            compact_vals = compact_vals[np.isfinite(compact_vals)]
-            
-            if compact_vals.size == 0:
-                print(f"  credibility={credibility}: no valid compactness values")
-                continue
-
-            msg = (
-                f"  credibility={credibility}: "
-                f"n={compact_vals.size}, "
-                f"compact_min={np.min(compact_vals):.4f}, "
-                f"compact_max={np.max(compact_vals):.4f}, "
-                f"compact_mean={np.mean(compact_vals):.4f}, "
-                f"compact_median={np.median(compact_vals):.4f}"
-            )
-            
-            if area_arr is not None and len(area_arr) > 0:
-                area_vals = np.asarray(area_arr[:, 1], dtype=float)
-                area_vals = area_vals[np.isfinite(area_vals)]
-
-                if area_vals.size > 0:
-                    msg += (
-                        f", area_min={np.min(area_vals):.1f}, "
-                        f"area_max={np.max(area_vals):.1f}, "
-                        f"area_mean={np.mean(area_vals):.1f}, "
-                        f"area_median={np.median(area_vals):.1f}"
-                    )
-
-            print(msg)
+        print("Post-exclusion compactness statistics by final class:")
 
     for credibility in range(1, nCred + 1):
-        CMc = CM[:, :, credibility - 1]
-        realCred = lstRealCred[credibility - 1]
-        if realCred is None or len(realCred) == 0:
+        class_mask = (rasWB == credibility)
+        if not np.any(class_mask):
+            if DEBUG_SAVE:
+                print(f"  credibility={credibility}: no patches")
             continue
 
-        try:
-            patchID = area[credibility - 1][:, 0].astype(np.int32)
-            areaC = area[credibility - 1][:, 1]
-            compactID = compactScore[credibility - 1][:, 0].astype(np.int32)
-            compactC = compactScore[credibility - 1][:, 1]
-        except Exception:
-            raise NotImplementedError("compactness() output structure is not yet defined.")
+        labels, n_objects = ndimage.label(class_mask, structure=cleanup_structure)
+        object_ids = np.arange(1, n_objects + 1, dtype=np.int32)
+        area_counts = np.bincount(labels.ravel(), minlength=n_objects + 1).astype(float)
 
-        maskSmall = np.zeros((rows, cols), dtype=bool)
-        maskVoid = np.zeros((rows, cols), dtype=bool)
+        is_boundary = identifyBoundaryMulti(labels, connectivity=4)
+        boundary_ids = labels[is_boundary]
+        boundary_counts = np.bincount(
+            boundary_ids[boundary_ids > 0], minlength=n_objects + 1
+        ).astype(float)
 
-        if patchID.size > 0:
-            loc = np.searchsorted(realCred[:, 0], patchID)
-            valid_loc = loc < len(realCred)
+        compact_scores = np.full(n_objects + 1, np.nan, dtype=float)
+        valid_perimeter = boundary_counts[object_ids] > 0
+        valid_ids = object_ids[valid_perimeter]
+        compact_scores[valid_ids] = (
+            area_counts[valid_ids] / boundary_counts[valid_ids]
+        )
 
-            patchID_tmp = patchID[valid_loc]
-            areaC_tmp = areaC[valid_loc]
-            loc_tmp = loc[valid_loc]
+        remove_small = area_counts[object_ids] < thSize_arr[credibility - 1]
+        remove_void = compact_scores[object_ids] < thCompactness_arr[credibility - 1]
+        remove_ids = object_ids[remove_small | remove_void]
 
-            valid_match = realCred[loc_tmp, 0] == patchID_tmp
+        if remove_ids.size > 0:
+            rasWB[np.isin(labels, remove_ids)] = 0
 
-            patchID_m = patchID_tmp[valid_match]
-            areaC_m = areaC_tmp[valid_match]
-            loc_m = loc_tmp[valid_match]
+        if DEBUG_SAVE:
+            finite_scores = compact_scores[object_ids]
+            finite_scores = finite_scores[np.isfinite(finite_scores)]
+            msg = (
+                f"  credibility={credibility}: n={n_objects}, "
+                f"removed={remove_ids.size}, "
+                f"area_min={np.min(area_counts[object_ids]):.1f}, "
+                f"area_max={np.max(area_counts[object_ids]):.1f}"
+            )
+            if finite_scores.size > 0:
+                msg += (
+                    f", compact_min={np.min(finite_scores):.4f}, "
+                    f"compact_max={np.max(finite_scores):.4f}, "
+                    f"compact_mean={np.mean(finite_scores):.4f}, "
+                    f"compact_median={np.median(finite_scores):.4f}"
+                )
+            print(msg)
 
-            if patchID_m.size > 0:
-                credC = realCred[loc_m, 1]
-                thArea = np.asarray(thSize)[credC - 1]
-                IDSmall = patchID_m[areaC_m < thArea]
-                maskSmall = np.isin(CMc, IDSmall)
-
-        if compactID.size > 0:
-            loc_comp = np.searchsorted(realCred[:, 0], compactID)
-            valid_comp = loc_comp < len(realCred)
-
-            compactID_tmp = compactID[valid_comp]
-            compactC_tmp = compactC[valid_comp]
-            loc_comp_tmp = loc_comp[valid_comp]
-
-            valid_comp_match = realCred[loc_comp_tmp, 0] == compactID_tmp
-
-            compactID_m = compactID_tmp[valid_comp_match]
-            compactC_m = compactC_tmp[valid_comp_match]
-            loc_comp_m = loc_comp_tmp[valid_comp_match]
-
-            if compactID_m.size > 0:
-                credComp = realCred[loc_comp_m, 1]
-                thCompC = np.asarray(thCompactness)[credComp - 1]
-                IDVoid = compactID_m[compactC_m < thCompC]
-                maskVoid = np.isin(CMc, IDVoid)
-
-        rasWB[(maskVoid | maskSmall) & (~np.isnan(rasWB))] = 0
+        del class_mask, labels, object_ids, area_counts
+        del is_boundary, boundary_ids, boundary_counts
+        del compact_scores, valid_perimeter, valid_ids
+        del remove_small, remove_void, remove_ids
 
     _save_debug(rasWB, "10_after_size_compactness")
     rasWB[maskOut | (Ipp <= 0)] = np.nan
@@ -1884,10 +1841,10 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     EXClasses = np.asarray(getattr(args_vv, "EXClasses", []), dtype=int)
     nWBClasses = np.asarray(getattr(args_vv, "nWBClasses", [50]), dtype=int)
 
-    rNWB = np.asarray(getattr(args_vv, "rNWB_morph", [0.3, 0.4, 0.4, 0.4, 0.4]), dtype=float)
-    thSize = np.asarray(getattr(args_vv, "thSize_morph", [10, 10, 10, 10, 10]), dtype=float)
-    thCompactness = np.asarray(getattr(args_vv, "thCompactness", [0, 0, 0.25, 1, 2]), dtype=float)
-    lia_th = float(getattr(args_vv, "LIA_th", 55.0))
+    rNWB = np.asarray(getattr(args_vv, "rNWB_morph", [0.3, 0.6, 0.5, 0.4, 0.4]), dtype=float)
+    thSize = np.asarray(getattr(args_vv, "thSize_morph", [10, 10, 10, 10, 50]), dtype=float)
+    thCompactness = np.asarray(getattr(args_vv, "thCompactness", [0, 1.2, 1.6, 2.0, 2.4]), dtype=float)
+    lia_th = float(getattr(args_vv, "LIA_th", 50.0))
 
     with rasterio.open(fileWB_vv) as src:
         rowsImage = src.height
