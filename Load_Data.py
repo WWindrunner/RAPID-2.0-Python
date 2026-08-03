@@ -87,23 +87,27 @@ def normalize_inc(ds):
     Invalid angle pixels remain zero and therefore stay outside classification.
     """
     print("Normalizing Gamma0 with ellipsoid incidence angle (degrees)")
-    angle = ds.inc.astype(np.float64)
-    cos_angle = da.cos(da.deg2rad(angle))
+    # Keep scene-sized arrays in float32. Statistical/GMM workers explicitly
+    # promote their much smaller windows to float64 before fitting.
+    angle = ds.inc.astype(np.float32)
+    img_lp = ds.img_lp.astype(np.float32)
+    img_cp = ds.img_cp.astype(np.float32)
+    cos_angle = da.cos(da.deg2rad(angle)).astype(np.float32)
     # Zero is treated as invalid because aligned incidence-angle rasters use
     # zero outside their valid source footprint.
     valid_angle = da.isfinite(angle) & (angle > 0.0) & (angle < 90.0)
     valid_angle = valid_angle & da.isfinite(cos_angle) & (cos_angle > 0.0)
 
     ds.img_lp = da.where(
-        valid_angle & da.isfinite(ds.img_lp) & (ds.img_lp > 0),
-        ds.img_lp / cos_angle,
-        0,
-    )
+        valid_angle & da.isfinite(img_lp) & (img_lp > 0),
+        img_lp / cos_angle,
+        np.float32(0.0),
+    ).astype(np.float32)
     ds.img_cp = da.where(
-        valid_angle & da.isfinite(ds.img_cp) & (ds.img_cp > 0),
-        ds.img_cp / cos_angle,
-        0,
-    )
+        valid_angle & da.isfinite(img_cp) & (img_cp > 0),
+        img_cp / cos_angle,
+        np.float32(0.0),
+    ).astype(np.float32)
     return ds
 
 

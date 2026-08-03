@@ -789,8 +789,8 @@ def dist_th_postprocess(args, ds, nodata=255):
     rowsImage = int(refmeta["height"])
     colsImage = int(refmeta["width"])
 
-    # ---- output file roots (aligned with your dup_args layout) ----
-    fileThFine_root = getattr(args, "fileThFine_root", os.path.join(args.dirTempPol, "ThFine_"))
+    # ---- output paths (aligned with the per-polarization layout) ----
+    fileThFine = getattr(args, "fileThFine", os.path.join(args.dirTempPol, "ThFine.tif"))
     fileCatInit = getattr(args, "fileCatInit", os.path.join(args.dirOut, "Cat_init.tif"))
 
     # ---- 1) build matThI ----
@@ -801,24 +801,42 @@ def dist_th_postprocess(args, ds, nodata=255):
     coarse_transform = _build_coarse_transform_from_blocks(args, refmeta)
     crs = refmeta["crs"]
 
-    for cat in range(1, nClasses + 1):
-        fine_path = f"{fileThFine_root}{cat}.tif"
+    os.makedirs(os.path.dirname(fileThFine), exist_ok=True)
+    th_profile = refmeta.copy()
+    th_profile.update(
+        driver="GTiff",
+        count=nClasses,
+        dtype="float32",
+        nodata=nodata,
+        compress="deflate",
+        tiled=True,
+    )
+    dst_arr = np.full((rowsImage, colsImage), nodata, dtype=np.float32)
+    with rasterio.open(fileThFine, "w", **th_profile) as thdst:
+        for cat in range(1, nClasses + 1):
+            print(f"interpolate the threshold map for class {cat}...")
 
-        print(f"interpolate the threshold map for class {cat}...")
-
-        arr = matThI[:, :, cat - 1]
-        # write nodata as 255 to match your convention (float raster with nodata=255 is ok)
-        out = np.where(np.isfinite(arr), arr.astype(np.float32, copy=False), np.float32(nodata))
-
-        _resample_array_to_ref(
-            out,
-            src_transform=coarse_transform,
-            src_crs=crs,
-            dst_path=fine_path,
-            refmeta=refmeta,
-            nodata=nodata,
-            resampling=Resampling.bilinear,
-        )
+            arr = matThI[:, :, cat - 1]
+            out = np.where(
+                np.isfinite(arr),
+                arr.astype(np.float32, copy=False),
+                np.float32(nodata),
+            )
+            dst_arr.fill(np.float32(nodata))
+            reproject(
+                source=out,
+                destination=dst_arr,
+                src_transform=coarse_transform,
+                src_crs=crs,
+                src_nodata=nodata,
+                dst_transform=refmeta["transform"],
+                dst_crs=refmeta["crs"],
+                dst_nodata=nodata,
+                resampling=Resampling.bilinear,
+            )
+            thdst.write(dst_arr, cat)
+            thdst.set_band_description(cat, f"threshold_class_{cat}")
+    del dst_arr
 
     # ---- 3) scan full-res and produce initial classification ----
     # MATLAB: C(end+1)=inf; idx=sort(C,'ascend');
@@ -841,7 +859,7 @@ def dist_th_postprocess(args, ds, nodata=255):
         keep_size=False,
     )
 
-    with rasterio.open(fileCatInit, "w", **out_meta) as dst:
+    with rasterio.open(fileCatInit, "w", **out_meta) as dst, rasterio.open(fileThFine) as thsrc:
         total = int(nR2) * int(nC2)
         done = 0
 
@@ -870,15 +888,12 @@ def dist_th_postprocess(args, ds, nodata=255):
 
                 for rank in range(nClasses):
                     cls = int(idx_sorted[rank])  # 1..nClasses
-                    fine_path = f"{fileThFine_root}{cls}.tif"
-
-                    with rasterio.open(fine_path) as thsrc:
-                        th_blk = thsrc.read(
-                            1,
-                            window=Window(cc0, rr0, ccn, rrn),
-                            boundless=True,
-                            fill_value=nodata,
-                        ).astype(np.float64)
+                    th_blk = thsrc.read(
+                        cls,
+                        window=Window(cc0, rr0, ccn, rrn),
+                        boundless=True,
+                        fill_value=nodata,
+                    ).astype(np.float64)
 
                     # MATLAB: waterMask = I1 < thI; waterCat(waterMask & waterCat==0)=idx(cat)
                     waterMask = basinMask & np.isfinite(th_blk) & (th_blk != nodata) & (Iblk < th_blk)
@@ -907,7 +922,7 @@ def dist_th_postprocess(args, ds, nodata=255):
     ds.C_ext = C_ext
     ds.pol_water = pol_water
     ds.fileCatInit = fileCatInit
-    ds.fileThFine_root = fileThFine_root
+    ds.fileThFine = fileThFine
 
     print(f"[dist_th] wrote threshold maps and initial classification -> {fileCatInit}")
     return args, ds

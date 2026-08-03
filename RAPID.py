@@ -56,6 +56,8 @@ def normalize_args(args):
     # -------- scalar numeric fields --------
     int_fields = [
         "blockSize",
+        "distThBatchSize",
+        "distThWindowsPerTask",
         "distThSampleSize",
         "morphPreBlockSize",
         "morphPrePatchSize",
@@ -240,6 +242,12 @@ def parse(config_json=None):
     parser.add_argument('--distThSampleSize', type=int, default=50,
                         help='Minimum sample size used in dist_th worker. Default 50.')
 
+    parser.add_argument('--distThBatchSize', type=int, default=600,
+                        help='Approximate number of dist_th windows loaded per row-stripe batch. Default 600.')
+
+    parser.add_argument('--distThWindowsPerTask', type=int, default=20,
+                        help='Number of adjacent dist_th windows evaluated by one Dask task. Default 20.')
+
     parser.add_argument('--distThRPW', nargs=2, type=float, default=[0.01, 0.9],
                         help='PW ratio thresholds [hasPW, isPW] used in dist_th worker. Default [0.01, 0.9].')
 
@@ -379,7 +387,7 @@ def dup_args(args, filepath, granuele_name, wotif=None):
 
     # scene-level temp root
     args_new.dirTempPol = os.path.join(args_new.dirOut, "TempPol")
-    args_new.fileThFine_root = os.path.join(args_new.dirTempPol, "ThFine_")
+    args_new.fileThFine = os.path.join(args_new.dirTempPol, "ThFine.tif")
     args_new.fileCatInit = os.path.join(args_new.dirOut, "Cat_init.tif")
 
     # os.makedirs(args_new.dirTempPol, exist_ok=True)
@@ -536,7 +544,7 @@ def _make_pol_args(args_scene, pol):
     os.makedirs(args_pol.dirTempPol, exist_ok=True)
 
     args_pol.fileSBAInit = os.path.join(args_pol.dirTempPol, f"SBAInit_{pol}.npz")
-    args_pol.fileThFine_root = os.path.join(args_pol.dirTempPol, f"ThFine_{pol}_")
+    args_pol.fileThFine = os.path.join(args_pol.dirTempPol, f"ThFine_{pol}.tif")
     args_pol.fileCatInit = os.path.join(args_pol.dirTempPol, f"Cat_init_{pol}.tif")
 
     return args_pol
@@ -606,10 +614,10 @@ def _binary_outputs_ready(args_pol, ds_pol):
         os.path.join(args_pol.dirTempPol, "Cat_init.tif")
     )
 
-    file_th_root = getattr(
+    file_th = getattr(
         args_pol,
-        "fileThFine_root",
-        os.path.join(args_pol.dirTempPol, "ThFine_")
+        "fileThFine",
+        os.path.join(args_pol.dirTempPol, "ThFine.tif")
     )
 
     # Cat_init
@@ -625,13 +633,20 @@ def _binary_outputs_ready(args_pol, ds_pol):
     if sigma2.size == 0:
         return False
 
-    # ThFine_*
-    ncat = int(sigma2.size)
-
-    for k in range(1, ncat + 2):
-        file_th = f"{file_th_root}{k}.tif"
-        if not os.path.exists(file_th):
-            return False
+    # One threshold band per category plus the low-threshold band.
+    expected_bands = int(sigma2.size) + 1
+    if not os.path.exists(file_th):
+        return False
+    try:
+        with rasterio.open(file_th) as src:
+            if src.count != expected_bands:
+                return False
+            if src.width != int(ds_pol.img_lp.shape[1]):
+                return False
+            if src.height != int(ds_pol.img_lp.shape[0]):
+                return False
+    except (OSError, rasterio.errors.RasterioError):
+        return False
 
     return True
 

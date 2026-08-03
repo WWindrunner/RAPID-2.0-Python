@@ -826,44 +826,38 @@ def identifyBoundaryMulti(CM, connectivity=4):
     A pixel is boundary if any neighbor under given connectivity has different label or is background.
     """
     CM = np.asarray(CM)
+    mask_obj = CM > 0
     boundary = np.zeros(CM.shape, dtype=bool)
 
-    if connectivity == 4:
-        shifts = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-    elif connectivity == 8:
-        shifts = [
-            (-1, 0), (1, 0), (0, -1), (0, 1),
-            (-1, -1), (-1, 1), (1, -1), (1, 1)
-        ]
-    else:
+    # Pixels on the array edge have an implicit background neighbor.
+    boundary[0, :] |= mask_obj[0, :]
+    boundary[-1, :] |= mask_obj[-1, :]
+    boundary[:, 0] |= mask_obj[:, 0]
+    boundary[:, -1] |= mask_obj[:, -1]
+
+    different = CM[1:, :] != CM[:-1, :]
+    boundary[1:, :] |= mask_obj[1:, :] & different
+    boundary[:-1, :] |= mask_obj[:-1, :] & different
+
+    different = CM[:, 1:] != CM[:, :-1]
+    boundary[:, 1:] |= mask_obj[:, 1:] & different
+    boundary[:, :-1] |= mask_obj[:, :-1] & different
+
+    if connectivity == 8:
+        different = CM[1:, 1:] != CM[:-1, :-1]
+        boundary[1:, 1:] |= mask_obj[1:, 1:] & different
+        boundary[:-1, :-1] |= mask_obj[:-1, :-1] & different
+
+        different = CM[1:, :-1] != CM[:-1, 1:]
+        boundary[1:, :-1] |= mask_obj[1:, :-1] & different
+        boundary[:-1, 1:] |= mask_obj[:-1, 1:] & different
+    elif connectivity != 4:
         raise ValueError("connectivity must be 4 or 8")
-
-    rows, cols = CM.shape
-    mask_obj = CM > 0
-
-    for dr, dc in shifts:
-        shifted = np.zeros_like(CM)
-        if dr >= 0:
-            rs_src = slice(0, rows - dr)
-            rs_dst = slice(dr, rows)
-        else:
-            rs_src = slice(-dr, rows)
-            rs_dst = slice(0, rows + dr)
-
-        if dc >= 0:
-            cs_src = slice(0, cols - dc)
-            cs_dst = slice(dc, cols)
-        else:
-            cs_src = slice(-dc, cols)
-            cs_dst = slice(0, cols + dc)
-
-        shifted[rs_dst, cs_dst] = CM[rs_src, cs_src]
-        boundary |= mask_obj & (shifted != CM)
 
     return boundary
 
 
-def RoI(CM, LCC, codeLCC, th, maskHigher, encapOpt):
+def RoI(CM, LCC, codeLCC, th, maskHigher, encapOpt, return_ratio=True):
     """
     Python port of RoI.m
 
@@ -878,7 +872,7 @@ def RoI(CM, LCC, codeLCC, th, maskHigher, encapOpt):
 
     if claInd.size == 0:
         mask2Remove = np.zeros_like(CM, dtype=bool)
-        ratioMat = np.full(CM.shape, np.nan, dtype=float)
+        ratioMat = np.full(CM.shape, np.nan, dtype=float) if return_ratio else None
         return mask2Remove, ratioMat
 
     uClaInd = np.unique(claInd)
@@ -930,15 +924,19 @@ def RoI(CM, LCC, codeLCC, th, maskHigher, encapOpt):
     valid_ids = objSum > 0
     roi[valid_ids] = coinSum[valid_ids] / objSum[valid_ids]
 
-    ratioMat = np.full(CM.shape, np.nan, dtype=float)
-    ratioMat[maskHasObj] = roi[CM[maskHasObj].astype(int)]
+    ratioMat = None
+    if return_ratio:
+        ratioMat = np.full(CM.shape, np.nan, dtype=float)
+        ratioMat[maskHasObj] = roi[CM[maskHasObj].astype(int)]
 
     if maskHigher:
         cid = np.where(roi > th)[0]
     else:
         cid = np.where(roi < th)[0]
 
-    mask2Remove = np.isin(CM, cid)
+    remove_lut = np.zeros(max_id + 1, dtype=bool)
+    remove_lut[cid] = True
+    mask2Remove = remove_lut[CM]
     return mask2Remove, ratioMat
 
 
@@ -1084,12 +1082,14 @@ def morph_block_worker(
     # -----------------------------
     # small local helper
     # -----------------------------
-    def _read_th_window(root, cat_idx):
-        arr = _read_window_from_tif(
-            f"{root}{cat_idx}.tif",
-            r0Load, c0Load, nRowsLoad, nColsLoad
-        )
-        return np.asarray(arr, dtype=np.float32)
+    def _read_th_window(src, cat_idx):
+        win = Window(c0Load, r0Load, nColsLoad, nRowsLoad)
+        arr = src.read(int(cat_idx), window=win).astype(np.float32, copy=False)
+        nodata = src.nodata
+        if nodata is not None:
+            arr[arr == nodata] = np.nan
+        arr[src.read_masks(int(cat_idx), window=win) == 0] = np.nan
+        return arr
 
     # ---- read initial water masks ----
     rasWBCo = _read_window_from_tif(fileWB_vv, r0Load, c0Load, nRowsLoad, nColsLoad)
@@ -1223,6 +1223,8 @@ def morph_block_worker(
     # =========================================================
 
     # ---- merge thresholds for PW ----
+    thsrc_vv = rasterio.open(fileThFine_vv)
+    thsrc_vh = rasterio.open(fileThFine_vh)
     thppM = np.zeros((rows, cols), dtype=np.float32)
     cats_pp = np.unique(rasWBCo[maskPWHighCred])
     cats_pp = cats_pp[np.isfinite(cats_pp)].astype(np.int32)
@@ -1231,7 +1233,7 @@ def morph_block_worker(
     for c in cats_pp:
         sel = (rasWBCo == c) & maskPWHighCred
         if np.any(sel):
-            thppC = _read_th_window(fileThFine_vv, int(c))
+            thppC = _read_th_window(thsrc_vv, int(c))
             thppM[sel] = thppC[sel]
             del thppC
 
@@ -1243,25 +1245,28 @@ def morph_block_worker(
     for c in cats_qp:
         sel = (rasWBCross == c) & maskPWHighCred
         if np.any(sel):
-            thqpC = _read_th_window(fileThFine_vh, int(c))
+            thqpC = _read_th_window(thsrc_vh, int(c))
             thqpM[sel] = thqpC[sel]
             del thqpC
 
     # ---- high-threshold layers ----
-    thpp_high_a = _read_th_window(fileThFine_vv, int(idx_vv[0]))
-    thpp_high_b = _read_th_window(fileThFine_vv, int(nCatPP + 1))
+    thpp_high_a = _read_th_window(thsrc_vv, int(idx_vv[0]))
+    thpp_high_b = _read_th_window(thsrc_vv, int(nCatPP + 1))
     thpp_high = np.maximum(thpp_high_a, thpp_high_b).astype(np.float32, copy=False)
     del thpp_high_a, thpp_high_b
 
-    thqp_high_a = _read_th_window(fileThFine_vh, int(idx_vh[0]))
-    thqp_high_b = _read_th_window(fileThFine_vh, int(nCatQP + 1))
+    thqp_high_a = _read_th_window(thsrc_vh, int(idx_vh[0]))
+    thqp_high_b = _read_th_window(thsrc_vh, int(nCatQP + 1))
     thqp_high = np.maximum(thqp_high_a, thqp_high_b).astype(np.float32, copy=False)
     del thqp_high_a, thqp_high_b
 
     # ---- moderate-threshold layer ----
     thpp_mod = None
     if len(idx_vv) >= 2:
-        thpp_mod = _read_th_window(fileThFine_vv, int(idx_vv[1]))
+        thpp_mod = _read_th_window(thsrc_vv, int(idx_vv[1]))
+
+    thsrc_vv.close()
+    thsrc_vh.close()
 
     # =========================================================
     # form high to low-credibility water bodies
@@ -1501,25 +1506,33 @@ def morph_block_worker(
             # only HIGH VH is promoted to class 2 above;
             # do not invent 4/5 from VH here unless you explicitly want that behavior.
 
-            patch_ids = np.unique(CMc[CMc > 0])
-            realCred = []
-
-            for pid in patch_ids:
-                vals = catVector[CMc == pid]
-                vals = vals[vals > 0]  # only final-category candidates 3/4/5
-                if vals.size == 0:
-                    continue
-
-                # BEST evidence inside the patch dominates
-                credInd = int(np.min(vals))
-
-                realCred.append((pid, credInd))
-                rasWB[CMc == pid] = credInd
-
-            lstRealCred[credibility - 1] = (
-                np.asarray(realCred, dtype=np.int32)
-                if len(realCred) > 0 else np.empty((0, 2), dtype=np.int32)
+            # Compute the best (smallest) positive category once per object.
+            # np.minimum.at replaces one full-block comparison per patch.
+            max_id = int(CMc.max())
+            sentinel = np.int8(127)
+            best_category = np.full(max_id + 1, sentinel, dtype=np.int8)
+            valid_category = (CMc > 0) & (catVector > 0)
+            np.minimum.at(
+                best_category,
+                CMc[valid_category],
+                catVector[valid_category],
             )
+
+            patch_ids = np.flatnonzero(best_category < sentinel).astype(np.int32)
+            if patch_ids.size > 0:
+                update_lut = np.zeros(max_id + 1, dtype=bool)
+                update_lut[patch_ids] = True
+                update = update_lut[CMc]
+                rasWB[update] = best_category[CMc[update]]
+                lstRealCred[credibility - 1] = np.column_stack([
+                    patch_ids,
+                    best_category[patch_ids].astype(np.int32),
+                ])
+                del update_lut, update
+            else:
+                lstRealCred[credibility - 1] = np.empty((0, 2), dtype=np.int32)
+
+            del best_category, valid_category
         else:
             rasWB[CMc > 0] = credibility
             patch_ids = np.unique(CMc[CMc > 0]).astype(np.int32)
@@ -1542,7 +1555,8 @@ def morph_block_worker(
             nWBClasses,
             rNWB[credibility - 1],
             True,
-            'contain'
+            'contain',
+            return_ratio=False,
         )
         mask2Remove = mask2Remove | mask2Remove_i
     rasWB[mask2Remove] = 0
@@ -1563,22 +1577,30 @@ def morph_block_worker(
         for credibility in range(1, nCred + 1):
             CMc = CM[:, :, credibility - 1]
 
-            # Only check objects intersecting the high-LIA candidate mask.
-            ids_hit = np.unique(CMc[lia_candidate & (CMc > 0)])
-            if ids_hit.size == 0:
+            max_id = int(CMc.max())
+            if max_id == 0:
                 continue
 
-            for pid in ids_hit:
-                obj_mask = (CMc == pid)
-                obj_area = np.count_nonzero(obj_mask)
-                if obj_area == 0:
-                    continue
+            object_area = np.bincount(
+                CMc.ravel(), minlength=max_id + 1
+            ).astype(np.float64)
+            lia_labels = CMc[lia_candidate & (CMc > 0)]
+            if lia_labels.size == 0:
+                continue
 
-                lia_area = np.count_nonzero(obj_mask & lia_candidate)
-                lia_ratio = lia_area / obj_area
+            lia_area = np.bincount(
+                lia_labels, minlength=max_id + 1
+            ).astype(np.float64)
+            valid_ids = np.flatnonzero(object_area > 0)
+            valid_ids = valid_ids[valid_ids > 0]
+            remove_ids = valid_ids[
+                lia_area[valid_ids] / object_area[valid_ids] >= lia_overlap_th
+            ]
 
-                if lia_ratio >= lia_overlap_th:
-                    maskLIARemove |= obj_mask
+            if remove_ids.size > 0:
+                remove_lut = np.zeros(max_id + 1, dtype=bool)
+                remove_lut[remove_ids] = True
+                maskLIARemove |= remove_lut[CMc]
 
         rasWB[maskLIARemove & (~np.isnan(rasWB))] = 0
         CM[maskLIARemove, :] = 0
@@ -1606,25 +1628,35 @@ def morph_block_worker(
         object_ids = np.arange(1, n_objects + 1, dtype=np.int32)
         area_counts = np.bincount(labels.ravel(), minlength=n_objects + 1).astype(float)
 
-        is_boundary = identifyBoundaryMulti(labels, connectivity=4)
-        boundary_ids = labels[is_boundary]
-        boundary_counts = np.bincount(
-            boundary_ids[boundary_ids > 0], minlength=n_objects + 1
-        ).astype(float)
-
-        compact_scores = np.full(n_objects + 1, np.nan, dtype=float)
-        valid_perimeter = boundary_counts[object_ids] > 0
-        valid_ids = object_ids[valid_perimeter]
-        compact_scores[valid_ids] = (
-            area_counts[valid_ids] / boundary_counts[valid_ids]
-        )
-
         remove_small = area_counts[object_ids] < thSize_arr[credibility - 1]
-        remove_void = compact_scores[object_ids] < thCompactness_arr[credibility - 1]
+        compact_threshold = thCompactness_arr[credibility - 1]
+        compact_scores = np.full(n_objects + 1, np.nan, dtype=float)
+
+        # Class 1 normally has a zero compactness threshold. Avoid all
+        # boundary scans unless compactness can remove an object or debugging
+        # explicitly needs the statistics.
+        if compact_threshold > 0 or DEBUG_SAVE:
+            is_boundary = identifyBoundaryMulti(labels, connectivity=4)
+            boundary_ids = labels[is_boundary]
+            boundary_counts = np.bincount(
+                boundary_ids[boundary_ids > 0], minlength=n_objects + 1
+            ).astype(float)
+            valid_perimeter = boundary_counts[object_ids] > 0
+            valid_ids = object_ids[valid_perimeter]
+            compact_scores[valid_ids] = (
+                area_counts[valid_ids] / boundary_counts[valid_ids]
+            )
+            del is_boundary, boundary_ids, boundary_counts
+            del valid_perimeter, valid_ids
+
+        remove_void = compact_scores[object_ids] < compact_threshold
         remove_ids = object_ids[remove_small | remove_void]
 
         if remove_ids.size > 0:
-            rasWB[np.isin(labels, remove_ids)] = 0
+            remove_lut = np.zeros(n_objects + 1, dtype=bool)
+            remove_lut[remove_ids] = True
+            rasWB[remove_lut[labels]] = 0
+            del remove_lut
 
         if DEBUG_SAVE:
             finite_scores = compact_scores[object_ids]
@@ -1645,8 +1677,7 @@ def morph_block_worker(
             print(msg)
 
         del class_mask, labels, object_ids, area_counts
-        del is_boundary, boundary_ids, boundary_counts
-        del compact_scores, valid_perimeter, valid_ids
+        del compact_scores, compact_threshold
         del remove_small, remove_void, remove_ids
 
     _save_debug(rasWB, "10_after_size_compactness")
@@ -1800,8 +1831,8 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     fileWB_vv = getattr(args_vv, "fileCatInit", os.path.join(args_vv.dirOut, "Cat_init.tif"))
     fileWB_vh = getattr(args_vh, "fileCatInit", os.path.join(args_vh.dirOut, "Cat_init.tif"))
 
-    fileThFine_vv = getattr(args_vv, "fileThFine_root", os.path.join(args_vv.dirTempPol, "ThFine_"))
-    fileThFine_vh = getattr(args_vh, "fileThFine_root", os.path.join(args_vh.dirTempPol, "ThFine_"))
+    fileThFine_vv = getattr(args_vv, "fileThFine", os.path.join(args_vv.dirTempPol, "ThFine.tif"))
+    fileThFine_vh = getattr(args_vh, "fileThFine", os.path.join(args_vh.dirTempPol, "ThFine.tif"))
 
     Cpp = np.asarray(ds_vv.sigma2, dtype=float).reshape(-1)
     Cqp = np.asarray(ds_vh.sigma2, dtype=float).reshape(-1)

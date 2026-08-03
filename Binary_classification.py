@@ -1180,6 +1180,35 @@ def _block_col(x, which: int):
     return x
 
 
+def dist_th_window_batch_worker(
+    args,
+    windows,
+    sigma2,
+    ENL,
+    binW,
+    thProbs,
+    Iu_global,
+    meanTransact_global,
+):
+    """Evaluate a small group of adjacent windows inside one Dask task."""
+    return [
+        dist_th_window_worker(
+            args,
+            iR,
+            iC,
+            Iwin,
+            lcwin,
+            sigma2,
+            ENL,
+            binW,
+            thProbs,
+            Iu_global,
+            meanTransact_global,
+        )
+        for iR, iC, Iwin, lcwin in windows
+    ]
+
+
 @tim
 def dist_th(args, ds):
     """
@@ -1247,12 +1276,14 @@ def dist_th(args, ds):
     matStatus = np.zeros((nR, nC), dtype=bool)
 
     # --- batching ---
-    batch_size = int(getattr(args, "distThBatchSize", 600))
+    batch_size = max(1, int(getattr(args, "distThBatchSize", 600)))
+    windows_per_task = max(1, int(getattr(args, "distThWindowsPerTask", 20)))
     row_batch_size = max(1, batch_size // max(1, nC))
 
     print(
         f"[dist_th] batch_size={batch_size}, "
-        f"row_batch_size={row_batch_size}",
+        f"row_batch_size={row_batch_size}, "
+        f"windows_per_task={windows_per_task}",
         flush=True
     )
 
@@ -1293,8 +1324,9 @@ def dist_th(args, ds):
         if LCstripe is not None:
             LCstripe = np.asarray(LCstripe)
 
-        # --- build tasks from local numpy stripe ---
+        # --- group adjacent windows into coarser Dask tasks ---
         tasks = []
+        window_batch = []
 
         for iR in range(r_start, r_end):
             rr0 = int(args.r0[iR])
@@ -1313,52 +1345,67 @@ def dist_th(args, ds):
                 Iwin = row_I[:, cc0_rel:cc0_rel + ccn]
                 lcwin = row_LC[:, cc0_rel:cc0_rel + ccn] if row_LC is not None else None
 
-                tasks.append(
-                    dask.delayed(dist_th_window_worker)(
-                        args,
-                        iR,
-                        iC,
-                        Iwin,
-                        lcwin,
-                        sigma2,
-                        ENL,
-                        binW,
-                        thProbs,
-                        Iu_global,
-                        meanTransact_global,
+                window_batch.append((iR, iC, Iwin, lcwin))
+                if len(window_batch) >= windows_per_task:
+                    tasks.append(
+                        dask.delayed(dist_th_window_batch_worker)(
+                            args,
+                            window_batch,
+                            sigma2,
+                            ENL,
+                            binW,
+                            thProbs,
+                            Iu_global,
+                            meanTransact_global,
+                        )
                     )
+                    window_batch = []
+
+        if window_batch:
+            tasks.append(
+                dask.delayed(dist_th_window_batch_worker)(
+                    args,
+                    window_batch,
+                    sigma2,
+                    ENL,
+                    binW,
+                    thProbs,
+                    Iu_global,
+                    meanTransact_global,
                 )
+            )
 
         # print(f"[dist_th] submitting row-batch rows {r_start}:{r_end}", flush=True)
-        batch_results = dask.compute(*tasks)
+        batch_groups = dask.compute(*tasks)
         # print(f"[dist_th] row-batch rows {r_start}:{r_end} done", flush=True)
 
         # --- collect results ---
-        for item in batch_results:
-            if item is None:
-                continue
+        for group in batch_groups:
+            for item in group:
+                if item is None:
+                    continue
 
-            iR, iC, thProbOpt, catOpt, thI_low = item
-            iR = int(iR)
-            iC = int(iC)
+                iR, iC, thProbOpt, catOpt, thI_low = item
+                iR = int(iR)
+                iC = int(iC)
 
-            thProbOpt = np.asarray(thProbOpt, dtype=np.float32).reshape(-1)
-            catOpt = np.asarray(catOpt, dtype=bool).reshape(-1)
+                thProbOpt = np.asarray(thProbOpt, dtype=np.float32).reshape(-1)
+                catOpt = np.asarray(catOpt, dtype=bool).reshape(-1)
 
-            if thProbOpt.size != nCats:
-                tmp = np.zeros((nCats,), dtype=np.float32)
-                tmp[: min(nCats, thProbOpt.size)] = thProbOpt[: min(nCats, thProbOpt.size)]
-                thProbOpt = tmp
+                if thProbOpt.size != nCats:
+                    tmp = np.zeros((nCats,), dtype=np.float32)
+                    tmp[: min(nCats, thProbOpt.size)] = thProbOpt[: min(nCats, thProbOpt.size)]
+                    thProbOpt = tmp
 
-            if catOpt.size != nCats:
-                tmpb = np.zeros((nCats,), dtype=bool)
-                tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
-                catOpt = tmpb
+                if catOpt.size != nCats:
+                    tmpb = np.zeros((nCats,), dtype=bool)
+                    tmpb[: min(nCats, catOpt.size)] = catOpt[: min(nCats, catOpt.size)]
+                    catOpt = tmpb
 
-            matThProb[iR, iC, :] = thProbOpt
-            matCat[iR, iC, :] = catOpt
-            matThI_low[iR, iC] = np.float32(thI_low)
-            matStatus[iR, iC] = True
+                matThProb[iR, iC, :] = thProbOpt
+                matCat[iR, iC, :] = catOpt
+                matThI_low[iR, iC] = np.float32(thI_low)
+                matStatus[iR, iC] = True
 
         processed += (r_end - r_start) * nC
         if (processed % 5000 == 0) or (processed == total):
