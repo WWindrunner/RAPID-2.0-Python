@@ -10,6 +10,11 @@
 
   "inc_angle_path": null,
 
+  "LIA_path": null,
+  "ice_mask_path": null,
+  "cloud_mask_path": null,
+  "desert_mask_path": null,
+
   "granules": [
     "scene_001"
   ]

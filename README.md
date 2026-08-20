@@ -18,10 +18,21 @@ This repository aims to:
 
 
 ## Requirements
-Run the following command to install the conda environment for RAPID v2.0.
+Create the RAPID processing environment:
+
 ```
 conda env create -f requirements.yml
 ```
+
+The complete download/preprocessing pipeline keeps its geospatial dependencies
+in a separate environment:
+
+```
+conda env create -f S1_download/s1pro.yml
+```
+
+The automatic-download environment is expected to have ESA SNAP configured.
+The pipeline runner uses Bash and standard GNU utilities such as `realpath`.
 
 
 ## Data input requirements
@@ -131,17 +142,37 @@ input path.
 `submit_script.sh` provides an `sbatch` example:
 
 ```
+export CDSE_USERNAME='username'
+export CDSE_PASSWORD='password'
 sbatch submit_script.sh
 ```
 
-### Process multiple existing scenes
+Edit the project, Conda, output, desert-mask, partition, and product-name
+placeholders in the template before submission. Credentials remain in the
+submitting environment rather than being stored in the script.
+
+### Complete pipeline from S1 product names
 
 `run_scenes.sh` processes product names in the exact order listed. A failed
 scene is reported and does not stop later scenes.
 
+Key environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OUTPUT_ROOT` | required | Root for every generated file and final result |
+| `DOWNLOAD_S1` | `true` | Download by exact product name or use local inputs |
+| `INPUT_ROOT` | none | Required only when `DOWNLOAD_S1=false` |
+| `CDSE_USERNAME`, `CDSE_PASSWORD` | none | Required only for automatic S1 download |
+| `DESERT_MASK_VRT` | none | Fixed global desert-mask input |
+| `S1PRO_ENV` | `s1pro` | Download and mask-generation Conda environment |
+| `RAPID_ENV` | `RAPID_python` | Flood-processing Conda environment |
+| `GENERATE_MASKS` | `true` | Generate snow/cloud, LIA, and desert inputs |
+| `PREPROCESS_GAMMA` | `true` | Pre-normalize local Gamma0; local mode only |
+| `ORBIT_DIRECTION` | automatic | Optional `ASCENDING`/`DESCENDING` LIA fallback |
+
 Automatic download is the default. It needs no `INPUT_ROOT`; provide
-Copernicus credentials through environment variables and ensure ESA SNAP is
-on `PATH` (or set `SNAP_BIN`):
+Copernicus credentials through environment variables:
 
 ```bash
 DOWNLOAD_S1=true \
@@ -152,20 +183,17 @@ DESERT_MASK_VRT=/path/to/global_desert_mask.vrt \
 bash run_scenes.sh S1_PRODUCT_1 S1_PRODUCT_2
 ```
 
-Downloaded S1 data, SNAP products, normalized Gamma0, and mask intermediates
+Downloaded S1 data, preprocessing products, normalized Gamma0, and mask intermediates
 are all written under `<OUTPUT_ROOT>/<S1_PRODUCT>/preprocessing/`. After the
-scene completes successfully, the downloaded ZIP and disposable SNAP products
+scene completes successfully, the downloaded ZIP and disposable preprocessing products
 are removed; failed-scene intermediates are retained for diagnosis.
 
 For existing local scenes, set `DOWNLOAD_S1=false`. Each read-only input folder
 must contain `Gamma0_VV.tif`, `Gamma0_VH.tif`, and
 `incidenceAngleFromEllipsoid.tif` (names can be overridden with environment
-variables):
-
-By default, the script writes all generated data under each output scene's
-`preprocessing/` folder in the `s1pro` environment and then runs RAPID in the
-`RAPID_python` environment. The input tree is read-only; `OUTPUT_ROOT` must be
-separate from `INPUT_ROOT` and cannot be one of its subdirectories:
+variables). Generated data is written under the corresponding output scene's
+`preprocessing/` directory. `OUTPUT_ROOT` must be separate from `INPUT_ROOT`
+and cannot be one of its subdirectories:
 
 ```bash
 DOWNLOAD_S1=false \
@@ -187,9 +215,10 @@ bash run_scenes.sh S1_PRODUCT_1 S1_PRODUCT_2
 ```
 
 Do not supply an incidence-angle normalization input for Gamma0 rasters that
-have already been normalized. Existing scene masks named
-`<S1_PRODUCT>_LIA.tif`, `<S1_PRODUCT>_ice.tif`, and
-`<S1_PRODUCT>_desert.tif` are passed to RAPID when present.
+have already been normalized. When `GENERATE_MASKS=false`, existing masks
+named `<S1_PRODUCT>_LIA.tif`, `<S1_PRODUCT>_ice.tif`,
+`<S1_PRODUCT>_cloud.tif`, and `<S1_PRODUCT>_desert.tif` are read without being
+modified and passed to RAPID when present.
 
 By default, the runner regenerates snow/cloud and binary LIA masks before
 RAPID. Set `GENERATE_MASKS=false` to reuse existing masks. Snow is set when any

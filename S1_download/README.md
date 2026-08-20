@@ -10,7 +10,7 @@ For each Sentinel-1 product name, the workflow runs the following steps:
 1. `Sentinel_1_specific_name_download_process.py`
    - Searches for and downloads the Sentinel-1 GRD product from Copernicus
      Data Space.
-   - Uses SNAP through pyroSAR to process VV and VH backscatter.
+   - Uses pyroSAR to process VV and VH backscatter.
    - Produces the incidence-angle rasters required by the next step.
 2. `Desert_mask.py`
    - Clips and reprojects the external global desert-mask VRT to the
@@ -32,7 +32,7 @@ For each Sentinel-1 product name, the workflow runs the following steps:
      masks on the Sentinel-1 grid.
 
 The repository-level multi-scene runner controls stage ordering. Temporary
-ZIP, DEM, SNAP, and Sentinel-2 files should only be cleaned after the relevant
+ZIP, DEM, preprocessing, and Sentinel-2 files should only be cleaned after the relevant
 scene succeeds; failed-scene intermediates are retained for inspection or
 retry.
 
@@ -44,9 +44,6 @@ The current Conda environment was exported to `s1pro.yml`:
 conda env create -f s1pro.yml
 conda activate s1pro
 ```
-
-The download workflow also requires ESA SNAP. Make sure the SNAP `bin`
-directory is available on `PATH`, or set the `SNAP_BIN` environment variable.
 
 Copernicus Data Space credentials are only required when Sentinel-1 download
 is enabled. Set `CDSE_USERNAME` and `CDSE_PASSWORD`; existing local Gamma0 and
@@ -113,4 +110,4 @@ Each Sentinel-1 product is written to its own subdirectory:
         +-- desert_mask.tif
 ```
 
-Intermediate SNAP output files are removed after successful completion.
+Intermediate preprocessing files are removed after successful completion.

@@ -9,7 +9,6 @@
 # Optional environment variables:
 #   DOWNLOAD_S1=true
 #   CDSE_USERNAME / CDSE_PASSWORD (required when DOWNLOAD_S1=true)
-#   SNAP_BIN=                    optional ESA SNAP bin directory
 #   S1PRO_ENV=s1pro
 #   RAPID_ENV=RAPID_python
 #   PREPROCESS_GAMMA=true
