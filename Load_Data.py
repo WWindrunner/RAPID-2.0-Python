@@ -267,11 +267,11 @@ def Load_Data(args):
 
     lia_path = getattr(args, "LIA_path", None)
     if lia_path is not None:
-        print(f"[Load_Data] reading LIA raster: {lia_path}", flush=True)
+        print(f"[Load_Data] reading binary LIA exclusion mask: {lia_path}", flush=True)
         if args.datamode == 'mem':
-            ds.lia = ancillary().getLocalRaster(lia_path, resampling="bilinear").squeeze()
+            ds.lia = ancillary().getLocalRaster(lia_path, resampling="nearest").squeeze()
         else:
-            tempfileLIA = ancillary(datamode=args.datamode).getLocalRaster(lia_path, resampling="bilinear")
+            tempfileLIA = ancillary(datamode=args.datamode).getLocalRaster(lia_path, resampling="nearest")
             ds.lia = readhdf(tempfileLIA.name, args.chunks).squeeze()
             args.tempfiles.append(tempfileLIA)
 

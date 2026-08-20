@@ -47,9 +47,10 @@ Gamma0_normalized = Gamma0 / cos(theta_ellipsoid)
 
 where `theta_ellipsoid` is the ellipsoid incidence angle.
 
-`inc_angle_path` is different from `LIA_path`. The former is used for
-incidence-angle normalization, while the latter is an optional local incidence
-angle raster used for terrain/mountain-shadow exclusion.
+`inc_angle_path` is different from `LIA_path`. The former is a degree raster
+used for incidence-angle normalization, while the latter is an optional binary
+terrain/mountain-shadow exclusion mask (`1` where LIA is greater than 50
+degrees).
 
 Other required auxiliary data, including Water Occurrence and land-cover
 maps, are downloaded automatically.
@@ -80,7 +81,7 @@ python -u RAPID.py '<Input_Gamma0_CoPol>' '<Input_Gamma0_CrossPol>' <Output_Fold
 To also apply terrain/mountain-shadow exclusion:
 
 ```
-python -u RAPID.py '<Input_Gamma0_CoPol>' '<Input_Gamma0_CrossPol>' <Output_Folder> --inc_angle_path '<Ellipsoid_Incidence_Angle>' --LIA_path '<Local_Incidence_Angle>'
+python -u RAPID.py '<Input_Gamma0_CoPol>' '<Input_Gamma0_CrossPol>' <Output_Folder> --inc_angle_path '<Ellipsoid_Incidence_Angle>' --LIA_path '<Binary_LIA_Mask>'
 ```
 
 If no exclusion-mask options are supplied, exclusion masks are not applied.
@@ -111,7 +112,7 @@ Example:
     ]
   ],
   "inc_angle_path": "/path/to/scene_001/ellipsoid_incidence_angle.tif",
-  "LIA_path": "/path/to/scene_001/local_incidence_angle.tif",
+  "LIA_path": "/path/to/scene_001/lia_mask.tif",
   "ice_mask_path": "/path/to/scene_001/snow_ice_mask.tif",
   "desert_mask_path": "/path/to/scene_001/desert_dark_area_mask.tif",
   "granules": ["scene_001"]
@@ -164,6 +165,13 @@ Do not supply an incidence-angle normalization input for Gamma0 rasters that
 have already been normalized. Existing scene masks named
 `<S1_PRODUCT>_LIA.tif`, `<S1_PRODUCT>_ice.tif`, and
 `<S1_PRODUCT>_desert.tif` are passed to RAPID when present.
+
+By default, the runner regenerates snow/cloud and binary LIA masks before
+RAPID. Set `GENERATE_MASKS=false` to reuse existing masks. Snow is set when any
+valid Sentinel-2 observation day in the preceding 15-day window sees snow or
+ice. Cloud is set only when every valid observation on every observed day is
+cloud or cloud shadow. Pixels without a valid observation are nodata (255).
+The cloud mask is retained as a reference and is not passed to RAPID.
 
 
 ## Main Output

@@ -10,6 +10,8 @@
 #   S1PRO_ENV=s1pro
 #   RAPID_ENV=RAPID_python
 #   PREPROCESS_GAMMA=true
+#   GENERATE_MASKS=true
+#   ORBIT_DIRECTION=             optional LIA fallback: ASCENDING/DESCENDING
 #   VV_NAME=Gamma0_VV.tif
 #   VH_NAME=Gamma0_VH.tif
 #   INC_ANGLE_NAME=incidenceAngleFromEllipsoid.tif
@@ -30,6 +32,8 @@ output_root=${OUTPUT_ROOT:-}
 s1pro_env=${S1PRO_ENV:-s1pro}
 rapid_env=${RAPID_ENV:-RAPID_python}
 preprocess_gamma=${PREPROCESS_GAMMA:-true}
+generate_masks=${GENERATE_MASKS:-true}
+orbit_direction=${ORBIT_DIRECTION:-}
 vv_name=${VV_NAME:-Gamma0_VV.tif}
 vh_name=${VH_NAME:-Gamma0_VH.tif}
 inc_angle_name=${INC_ANGLE_NAME:-incidenceAngleFromEllipsoid.tif}
@@ -50,6 +54,11 @@ case "${preprocess_gamma,,}" in
     true|1|yes) preprocess_gamma=true ;;
     false|0|no) preprocess_gamma=false ;;
     *) echo "PREPROCESS_GAMMA must be true or false." >&2; exit 2 ;;
+esac
+case "${generate_masks,,}" in
+    true|1|yes) generate_masks=true ;;
+    false|0|no) generate_masks=false ;;
+    *) echo "GENERATE_MASKS must be true or false." >&2; exit 2 ;;
 esac
 
 mkdir -p -- "$output_root"
@@ -88,6 +97,28 @@ for scene in "$@"; do
         rapid_vv="$normalized_dir/Gamma0_VV.tif"
         rapid_vh="$normalized_dir/Gamma0_VH.tif"
         rapid_incidence_args=()
+    fi
+
+    if [[ "$generate_masks" == true ]]; then
+        if ! conda run -n "$s1pro_env" python \
+            "$script_dir/S1_download/Snow_detect.py" "$scene" "$input_root"; then
+            echo "[$scene] snow/cloud mask generation failed; continuing." >&2
+            failed+=("$scene:snow-cloud")
+            continue
+        fi
+
+        lia_direction_args=()
+        if [[ -n "$orbit_direction" ]]; then
+            lia_direction_args=(--orbit-direction "$orbit_direction")
+        fi
+        if ! conda run -n "$s1pro_env" python \
+            "$script_dir/S1_download/cal_LIA.py" "$scene" "$input_root" \
+            --incidence-angle "$incidence" \
+            "${lia_direction_args[@]}"; then
+            echo "[$scene] LIA mask generation failed; continuing." >&2
+            failed+=("$scene:LIA")
+            continue
+        fi
     fi
 
     rapid_mask_args=()

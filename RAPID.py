@@ -334,7 +334,7 @@ def parse(config_json=None):
     # LIA exclusion parameters
     # -----------------------------
     parser.add_argument('--LIA_path', type=str, default=None,
-                        help='Optional local incidence angle raster path in degrees for exclusion.')
+                        help='Optional binary LIA exclusion mask (1 = LIA greater than 50 degrees).')
 
     parser.add_argument('--inc_angle_path', type=str, default=None,
                         help='Optional local single-band ellipsoid incidence-angle raster in degrees. If omitted, input Gamma0 is assumed to be already normalized.')
@@ -346,7 +346,7 @@ def parse(config_json=None):
                         help='Optional precomputed dark area raster path (binary, 1 for dark area).')
 
     parser.add_argument('--LIA_th', type=float, default=50.0,
-                        help='LIA threshold in degrees for mountain shadow exclusion. Default 50.0.')
+                        help='Deprecated compatibility option; binary LIA masks are thresholded during preprocessing.')
 
     # ---- current workflow / io ----
     parser.add_argument('--OUT_PATH', type=str, default='.')

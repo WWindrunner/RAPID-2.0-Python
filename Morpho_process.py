@@ -1009,7 +1009,6 @@ def morph_block_worker(
     LCC_block,
     water_occ_block,
     lia_block,
-    lia_th,
     ice_block,
     desert_block,
     nCatPP,
@@ -1426,7 +1425,6 @@ def morph_block_worker(
         ice_candidate = (
                 np.isfinite(ice_block)
                 & (ice_block > 0)
-                # & (water_occ <= 5)
         )
 
         rasWB[ice_candidate & (~np.isnan(rasWB))] = 0
@@ -1567,8 +1565,7 @@ def morph_block_worker(
     if lia_block is not None:
         lia_candidate = (
                 np.isfinite(lia_block)
-                & (lia_block > lia_th)
-                & (water_occ <= 5)
+                & (lia_block == 1)
         )
 
         lia_overlap_th = 0.35
@@ -1875,7 +1872,6 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     rNWB = np.asarray(getattr(args_vv, "rNWB_morph", [0.3, 0.6, 0.5, 0.4, 0.4]), dtype=float)
     thSize = np.asarray(getattr(args_vv, "thSize_morph", [10, 10, 10, 10, 50]), dtype=float)
     thCompactness = np.asarray(getattr(args_vv, "thCompactness", [0, 1.2, 1.6, 2.0, 2.4]), dtype=float)
-    lia_th = float(getattr(args_vv, "LIA_th", 50.0))
 
     with rasterio.open(fileWB_vv) as src:
         rowsImage = src.height
@@ -2048,7 +2044,6 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
                     LCC_block=LCC_block,
                     water_occ_block=water_occ_block,
                     lia_block=lia_block,
-                    lia_th=lia_th,
                     ice_block=ice_block,
                     desert_block=desert_block,
                     nCatPP=nCatPP,

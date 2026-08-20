@@ -18,13 +18,16 @@ For each Sentinel-1 product name, the workflow runs the following steps:
    - Preserves the mask classes using nearest-neighbour resampling.
 3. `cal_LIA.py`
    - Downloads Copernicus DEM tiles from Microsoft Planetary Computer.
-   - Resamples the DEM to the Sentinel-1 grid and calculates local incidence
-     angle (LIA).
+   - Resolves orbit direction from a manifest, ZIP, public catalogue query, or
+     explicit fallback argument.
+   - Writes a uint8 mask with 1 where LIA is greater than 50 degrees.
 4. `Snow_detect.py`
    - Searches for Sentinel-2 L2A products from the 15 days before the
      Sentinel-1 acquisition.
-   - Uses the Sentinel-2 Scene Classification Layer (SCL) to calculate snow
-     occurrence on the Sentinel-1 grid.
+   - Gets the date from the S1 name and the extent from the local Gamma0, so
+     the original S1 ZIP is not required.
+   - Uses the SCL downloads once to generate both snow/ice and persistent-cloud
+     masks on the Sentinel-1 grid.
 
 The repository-level multi-scene runner controls stage ordering. Temporary
 ZIP, DEM, SNAP, and Sentinel-2 files should only be cleaned after the relevant
@@ -64,6 +67,14 @@ python cal_LIA.py <S1_PRODUCT_NAME> <OUTPUT_FOLDER>
 python Snow_detect.py <S1_PRODUCT_NAME> <OUTPUT_FOLDER>
 ```
 
+If LIA orbit direction cannot be obtained automatically, provide it directly:
+
+```bash
+python cal_LIA.py <S1_PRODUCT_NAME> <OUTPUT_FOLDER> \
+  --incidence-angle /path/to/incidence_angle.tif \
+  --orbit-direction ASCENDING
+```
+
 For already-downloaded, unnormalized linear Gamma0 rasters, normalization can
 be run without downloading Sentinel-1 again:
 
@@ -91,6 +102,7 @@ Each Sentinel-1 product is written to its own subdirectory:
     +-- <S1_PRODUCT_NAME>_desert.tif
     +-- <S1_PRODUCT_NAME>_LIA.tif
     +-- <S1_PRODUCT_NAME>_ice.tif
+    +-- <S1_PRODUCT_NAME>_cloud.tif
 ```
 
 Intermediate SNAP output files are removed after successful completion.
