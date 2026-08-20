@@ -784,6 +784,8 @@ def RAPID(*args, **kwargs):
                         val = int(val)
                     elif isinstance(old_val, float):
                         val = float(val)
+                    elif isinstance(old_val, list):
+                        val = [val]
 
                 setattr(args, key, val)
                 i += 2

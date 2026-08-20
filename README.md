@@ -132,6 +132,39 @@ input path.
 sbatch submit_script.sh
 ```
 
+### Process multiple existing scenes
+
+`run_scenes.sh` processes scene folders in the exact order listed. A failed
+scene is reported and does not stop later scenes. Each input folder must
+contain `Gamma0_VV.tif`, `Gamma0_VH.tif`, and
+`incidenceAngleFromEllipsoid.tif` (the names can be overridden with the
+environment variables documented in the script).
+
+By default, the script first writes normalized inputs under each scene's
+`normalized/` folder in the `s1pro` environment and then runs RAPID in the
+`RAPID_python` environment:
+
+```bash
+INPUT_ROOT=/path/to/scenes \
+OUTPUT_ROOT=/path/to/results \
+bash run_scenes.sh S1_PRODUCT_1 S1_PRODUCT_2
+```
+
+To skip the separate normalization output and let RAPID normalize the raw
+Gamma0 inputs internally with `--inc_angle_path`, use:
+
+```bash
+PREPROCESS_GAMMA=false \
+INPUT_ROOT=/path/to/scenes \
+OUTPUT_ROOT=/path/to/results \
+bash run_scenes.sh S1_PRODUCT_1 S1_PRODUCT_2
+```
+
+Do not supply an incidence-angle normalization input for Gamma0 rasters that
+have already been normalized. Existing scene masks named
+`<S1_PRODUCT>_LIA.tif`, `<S1_PRODUCT>_ice.tif`, and
+`<S1_PRODUCT>_desert.tif` are passed to RAPID when present.
+
 
 ## Main Output
 1. `TempPol_VV/Cat_init_VV.tif`: Result of classification of the VV polarization.
