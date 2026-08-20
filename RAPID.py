@@ -342,6 +342,9 @@ def parse(config_json=None):
     parser.add_argument('--ice_mask_path', type=str, default=None,
                         help='Optional precomputed ice raster path (binary, 1 for ice).')
 
+    parser.add_argument('--cloud_mask_path', type=str, default=None,
+                        help='Optional binary persistent-cloud reference mask; saved but not used for exclusion.')
+
     parser.add_argument('--desert_mask_path', type=str, default=None,
                         help='Optional precomputed dark area raster path (binary, 1 for dark area).')
 

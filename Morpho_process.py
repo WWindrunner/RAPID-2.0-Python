@@ -1424,7 +1424,7 @@ def morph_block_worker(
     if ice_block is not None:
         ice_candidate = (
                 np.isfinite(ice_block)
-                & (ice_block > 0)
+                & (ice_block == 1)
         )
 
         rasWB[ice_candidate & (~np.isnan(rasWB))] = 0
@@ -1436,8 +1436,7 @@ def morph_block_worker(
     if desert_block is not None:
         desert_candidate = (
                 np.isfinite(desert_block)
-                & (desert_block > 0)
-                & (LCC == 60)
+                & (desert_block == 1)
         )
 
         rasWB[desert_candidate & (~np.isnan(rasWB))] = 0

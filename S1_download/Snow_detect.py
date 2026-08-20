@@ -32,16 +32,6 @@ def parse_s1_time(product_name):
     return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S")
 
 
-def find_reference_raster(scene_dir):
-    for path in (
-        os.path.join(scene_dir, "normalized", "Gamma0_VV.tif"),
-        os.path.join(scene_dir, "Gamma0_VV.tif"),
-    ):
-        if os.path.isfile(path):
-            return path
-    raise FileNotFoundError(f"No Gamma0_VV.tif found for scene: {scene_dir}")
-
-
 def download_scl_asset(href, destination):
     signed_href = planetary_computer.sign_url(href)
     os.makedirs(os.path.dirname(destination), exist_ok=True)
@@ -68,17 +58,17 @@ def write_mask(path, data, profile, description):
         dst.set_band_description(1, description)
 
 
-def generate_s2_masks(product_name, output_root):
+def generate_s2_masks(product_name, reference_path, output_dir):
     started = time.perf_counter()
-    scene_dir = os.path.join(os.path.abspath(output_root), product_name)
-    if not os.path.isdir(scene_dir):
-        raise FileNotFoundError(f"S1 product folder not found: {scene_dir}")
-
-    reference_path = find_reference_raster(scene_dir)
-    workspace = os.path.join(scene_dir, "snow_temp")
+    reference_path = os.path.abspath(os.path.expanduser(reference_path))
+    output_dir = os.path.abspath(os.path.expanduser(output_dir))
+    if not os.path.isfile(reference_path):
+        raise FileNotFoundError(f"Gamma0 reference not found: {reference_path}")
+    os.makedirs(output_dir, exist_ok=True)
+    workspace = os.path.join(output_dir, "snow_temp")
     os.makedirs(workspace, exist_ok=True)
-    snow_out = os.path.join(scene_dir, f"{product_name}_ice.tif")
-    cloud_out = os.path.join(scene_dir, f"{product_name}_cloud.tif")
+    snow_out = os.path.join(output_dir, "snow_mask.tif")
+    cloud_out = os.path.join(output_dir, "cloud_mask.tif")
 
     with rasterio.open(reference_path) as reference:
         if reference.crs is None:
@@ -178,9 +168,12 @@ def generate_s2_masks(product_name, output_root):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("s1_product_name")
-    parser.add_argument("output_root")
+    parser.add_argument("reference_raster")
+    parser.add_argument("output_dir")
     args = parser.parse_args()
-    generate_s2_masks(args.s1_product_name, args.output_root)
+    generate_s2_masks(
+        args.s1_product_name, args.reference_raster, args.output_dir
+    )
 
 
 if __name__ == "__main__":

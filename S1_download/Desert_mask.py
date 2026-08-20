@@ -1,7 +1,7 @@
+import argparse
 import os
 import sys
 import time
-import traceback
 
 from osgeo import gdal
 
@@ -10,26 +10,20 @@ gdal.UseExceptions()
 start_time = time.perf_counter()
 
 
-if len(sys.argv) != 4:
-    print(
-        "Usage: python Desert_mask.py "
-        "<S1_PRODUCT_NAME> <OUTPUT_FOLDER> <DESERT_MASK_VRT>"
-    )
-    sys.exit(1)
+parser = argparse.ArgumentParser(
+    description="Clip a fixed global desert mask to a read-only SAR reference."
+)
+parser.add_argument("reference_raster")
+parser.add_argument("desert_mask_vrt")
+parser.add_argument("output_path")
+args = parser.parse_args()
 
-S1name = sys.argv[1]
-folder = os.path.abspath(os.path.expanduser(sys.argv[2]))
-desert_mask_vrt = os.path.abspath(os.path.expanduser(sys.argv[3]))
-product_dir = os.path.join(folder, S1name)
-
-if not os.path.isdir(product_dir):
-    raise FileNotFoundError(f"S1 product folder not found: {product_dir}")
-
-reference_path = os.path.join(product_dir, "Gamma0_VV.tif")
+reference_path = os.path.abspath(os.path.expanduser(args.reference_raster))
+desert_mask_vrt = os.path.abspath(os.path.expanduser(args.desert_mask_vrt))
+output_path = os.path.abspath(os.path.expanduser(args.output_path))
 if not os.path.isfile(reference_path):
     raise FileNotFoundError(f"Reference raster not found: {reference_path}")
-
-output_path = os.path.join(product_dir, f"{S1name}_desert.tif")
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
 
 def create_nodata_desert_raster(reference_ds):
@@ -58,6 +52,7 @@ reference_ds = gdal.Open(reference_path)
 if reference_ds is None:
     raise RuntimeError(f"Failed to open reference raster: {reference_path}")
 
+failed = False
 try:
     if not os.path.isfile(desert_mask_vrt):
         raise FileNotFoundError(f"Desert mask VRT not found: {desert_mask_vrt}")
@@ -124,13 +119,16 @@ try:
     elapsed = time.perf_counter() - start_time
     print(f"Desert mask completed in {elapsed:.2f} seconds.")
 except Exception:
+    failed = True
     print(
         "ERROR: Desert mask calculation failed. Creating an empty nodata mask ",
-        "so processing can continue.",
+        "for diagnostics.",
         file=sys.stderr,
     )
-    # traceback.print_exc()
     create_nodata_desert_raster(reference_ds)
-    print("Empty desert mask created so processing can continue.")
+    print("Empty diagnostic desert mask created.")
 finally:
     reference_ds = None
+
+if failed:
+    sys.exit(1)

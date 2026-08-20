@@ -155,10 +155,15 @@ parser = argparse.ArgumentParser(
     description="Generate a binary LIA > 50 degree exclusion mask."
 )
 parser.add_argument("s1_product_name")
-parser.add_argument("output_folder")
+parser.add_argument("work_dir", help="Writable per-scene preprocessing directory.")
 parser.add_argument(
     "--incidence-angle",
-    help="Ellipsoid incidence-angle raster; defaults to a scene-folder search.",
+    required=True,
+    help="Read-only ellipsoid incidence-angle raster.",
+)
+parser.add_argument(
+    "--metadata-dir",
+    help="Read-only directory that may contain manifest.safe or the S1 ZIP.",
 )
 parser.add_argument(
     "--orbit-direction", choices=["ASCENDING", "DESCENDING", "A", "D"],
@@ -167,27 +172,18 @@ parser.add_argument(
 cli_args = parser.parse_args()
 
 S1name = cli_args.s1_product_name
-folder = os.path.abspath(os.path.expanduser(cli_args.output_folder))
-path = os.path.join(folder, S1name)
+path = os.path.abspath(os.path.expanduser(cli_args.work_dir))
+metadata_dir = (
+    os.path.abspath(os.path.expanduser(cli_args.metadata_dir))
+    if cli_args.metadata_dir else path
+)
+os.makedirs(path, exist_ok=True)
 
-# print(f"Path: {path}")
-
-if not os.path.isdir(path):
-    raise FileNotFoundError(f"S1 product folder not found: {path}")
-
-if cli_args.incidence_angle:
-    S1_angle_path = os.path.abspath(os.path.expanduser(cli_args.incidence_angle))
-    if not os.path.isfile(S1_angle_path):
-        raise FileNotFoundError(
-            f"Ellipsoid incidence-angle raster not found: {S1_angle_path}"
-        )
-else:
-    angle_candidates = sorted(
-        glob.glob(os.path.join(path, "*incidenceAngleFromEllipsoid.tif"))
+S1_angle_path = os.path.abspath(os.path.expanduser(cli_args.incidence_angle))
+if not os.path.isfile(S1_angle_path):
+    raise FileNotFoundError(
+        f"Ellipsoid incidence-angle raster not found: {S1_angle_path}"
     )
-    if not angle_candidates:
-        raise FileNotFoundError(f"No ellipsoid incidence-angle raster found in {path}")
-    S1_angle_path = angle_candidates[0]
 dem_dir = os.path.join(path, "dem_tiles")
 os.makedirs(dem_dir, exist_ok=True)
 
@@ -297,7 +293,7 @@ with rasterio.open(dem_merge_resample, "w", **profile) as dst:
     dst.write(dem_reproj.astype(np.float32), 1)
 
 dem_resample_path = os.path.join(path, f"DEM_merged_res.tif")
-LIA_path = os.path.join(path, f"{S1name}_LIA.tif")
+LIA_path = os.path.join(path, "lia_mask.tif")
 
 
 with rasterio.open(dem_resample_path) as src:
@@ -323,7 +319,9 @@ aspect = aspect % 360
 inc = s1
 inc_rad = np.deg2rad(inc)
 
-pass_dir = resolve_orbit_direction(S1name, path, cli_args.orbit_direction)
+pass_dir = resolve_orbit_direction(
+    S1name, metadata_dir, cli_args.orbit_direction
+)
 AZIMUTH = 282 if pass_dir == "ASCENDING" else 102
 azi_rad = np.deg2rad(AZIMUTH)
 

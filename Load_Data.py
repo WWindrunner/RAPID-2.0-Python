@@ -264,6 +264,7 @@ def Load_Data(args):
     # Local incidence angle exclusion data
     ds.lia = None
     ds.desert_mask = None
+    ds.cloud_mask = None
 
     lia_path = getattr(args, "LIA_path", None)
     if lia_path is not None:
@@ -314,6 +315,23 @@ def Load_Data(args):
         if hasattr(ds.ice_mask, "rechunk"):
             ds.ice_mask = ds.ice_mask.rechunk(ds.img_lp.chunks)
 
+    # Persistent-cloud reference mask (saved for interpretation, not exclusion)
+    cloud_mask_path = getattr(args, "cloud_mask_path", None)
+    if cloud_mask_path is not None:
+        print(f"[Load_Data] reading cloud reference mask: {cloud_mask_path}", flush=True)
+        if args.datamode == 'mem':
+            ds.cloud_mask = ancillary().getLocalRaster(
+                cloud_mask_path, resampling="nearest"
+            ).squeeze()
+        else:
+            tempfileCloud = ancillary(datamode=args.datamode).getLocalRaster(
+                cloud_mask_path, resampling="nearest"
+            )
+            ds.cloud_mask = readhdf(tempfileCloud.name, args.chunks).squeeze()
+            args.tempfiles.append(tempfileCloud)
+        if hasattr(ds.cloud_mask, "rechunk"):
+            ds.cloud_mask = ds.cloud_mask.rechunk(ds.img_lp.chunks)
+
     # Desert mask
     desert_mask_path = getattr(args, "desert_mask_path", None)
     if desert_mask_path is not None:
@@ -333,6 +351,49 @@ def Load_Data(args):
         if hasattr(ds.desert_mask, "rechunk"):
             ds.desert_mask = ds.desert_mask.rechunk(ds.img_lp.chunks)
 
+    def canonical_binary_mask(mask):
+        """Return uint8 0/1/255 while preserving unknown input pixels."""
+        known = da.isfinite(mask) & ((mask == 0) | (mask == 1))
+        return da.where(known, mask, np.uint8(255)).astype(np.uint8)
+
+    if ds.lia is not None:
+        ds.lia = canonical_binary_mask(ds.lia)
+    if hasattr(ds, "ice_mask") and ds.ice_mask is not None:
+        ds.ice_mask = canonical_binary_mask(ds.ice_mask)
+    if ds.cloud_mask is not None:
+        ds.cloud_mask = canonical_binary_mask(ds.cloud_mask)
+
+    if ds.desert_mask is not None:
+        raw_desert = ds.desert_mask
+        desert_known = (
+            da.isfinite(raw_desert)
+            & (raw_desert != 255)
+            & (raw_desert != -9999)
+            & da.isfinite(ds.land_cover)
+            & (ds.land_cover > 0)
+        )
+        ds.desert_mask = da.where(
+            desert_known,
+            (raw_desert > 0) & (ds.land_cover == 60),
+            np.uint8(255),
+        ).astype(np.uint8)
+
+    masks_to_save = (
+        (ds.lia, "lia_mask.tif"),
+        (getattr(ds, "ice_mask", None), "snow_mask.tif"),
+        (ds.cloud_mask, "cloud_mask.tif"),
+        (ds.desert_mask, "desert_mask.tif"),
+    )
+    for mask, filename in masks_to_save:
+        if mask is not None:
+            save_ancillary_tif(
+                mask,
+                args,
+                out_name=os.path.join("masks", filename),
+                dtype="uint8",
+                nodata=255,
+            )
+
     if hasattr(ds, "inc"):
         del ds.inc
 
@@ -349,8 +410,8 @@ def save_ancillary_tif(arr, args, out_name, dtype="uint8", nodata=255):
     arr can be numpy array or dask array.
     """
 
-    os.makedirs(args.dirOut, exist_ok=True)
     out_path = os.path.join(args.dirOut, out_name)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     if isinstance(arr, da.Array):
         arr_out = arr.compute()
@@ -371,11 +432,18 @@ def save_ancillary_tif(arr, args, out_name, dtype="uint8", nodata=255):
         count=1,
         dtype=arr_out.dtype,
         nodata=nodata,
-        compress="lzw"
+        compress="deflate",
+        predictor=2,
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
+        BIGTIFF="IF_SAFER",
     )
 
     with rasterio.open(out_path, "w", **meta) as dst:
         dst.write(arr_out, 1)
+        dst.set_band_description(1, os.path.splitext(os.path.basename(out_name))[0])
+        dst.update_tags(mask_semantics="0=false,1=true,255=nodata")
 
     print(f"[Load_Data] saved ancillary raster: {out_path}", flush=True)
     return out_path

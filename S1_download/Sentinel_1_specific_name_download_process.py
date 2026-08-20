@@ -1,17 +1,17 @@
+import argparse
 import datetime
 import glob
 import os
-import shutil
-import sys
 from sys import stdout
 
 import numpy as np
-import pandas as pd
 import requests
 from osgeo import gdal
 from pyroSAR.snap.util import geocode
 
-os.environ['PATH'] += ':/tank/data/SFS/xinyis/shared/apps/esa-snap/bin'
+snap_bin = os.environ.get("SNAP_BIN")
+if snap_bin:
+    os.environ["PATH"] = snap_bin + os.pathsep + os.environ.get("PATH", "")
 
 
 def log_in(username, password):
@@ -22,12 +22,12 @@ def log_in(username, password):
         "username": username,
         "password": password
     }
-    response = requests.post(auth_url, data=auth_data)
+    response = requests.post(auth_url, data=auth_data, timeout=60)
+    response.raise_for_status()
     access_token = response.json().get("access_token")
 
     if not access_token:
-        print("Wrong username and password")
-        exit()
+        raise RuntimeError("Copernicus authentication returned no access token")
     return access_token
 
 def search_sentinel_with_S1name(S1name):
@@ -36,11 +36,10 @@ def search_sentinel_with_S1name(S1name):
         "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
         f"$filter=Name eq '{S1name_with_safe}'"
     )
-    response = requests.get(query_url)
+    response = requests.get(query_url, timeout=60)
+    response.raise_for_status()
     response_json = response.json()
-    df = pd.DataFrame.from_dict(response_json['value'])
-    
-    return df
+    return response_json.get("value", [])
 
 
 def download_Sentinel_with_ids_names(ids, name, output_dir, access_token):
@@ -53,19 +52,21 @@ def download_Sentinel_with_ids_names(ids, name, output_dir, access_token):
     stdout.flush()
     output_path = os.path.join(output_dir, output_filename)
     os.makedirs(output_dir, exist_ok=True)
-    with requests.get(download_url, headers=download_headers, stream=True) as r:
-        if r.status_code == 200:
-            total_size = int(r.headers.get('content-length', 0))
-            chunk_size = 8192
-
-            with open(output_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=chunk_size):
-                    f.write(chunk)
-
-
-            print(" completed.")
-        else:
-            print(f"Sentinel-1 download failed with status {r.status_code}.")
+    partial_path = f"{output_path}.part"
+    try:
+        with requests.get(
+            download_url, headers=download_headers, stream=True, timeout=300
+        ) as response:
+            response.raise_for_status()
+            with open(partial_path, 'wb') as output:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        output.write(chunk)
+        os.replace(partial_path, output_path)
+        print(" completed.")
+    finally:
+        if os.path.exists(partial_path):
+            os.remove(partial_path)
 
 def process_snentinel_images(file, processed_path):
     target_resolution = 20
@@ -138,60 +139,41 @@ def incidence_process(VV_VH_incidence_path):
     ds1 = None
     ds2 = None
 
-if len(sys.argv) != 5:
-    print(
-        "Usage: python Sentinel_1_specific_name_download_process.py "
-        "<S1_PRODUCT_NAME1,S1_PRODUCT_NAME2,...> <OUTPUT_FOLDER> "
-        "<USERNAME> <PASSWORD>"
-    )
-    sys.exit(1)
+parser = argparse.ArgumentParser(
+    description="Download and preprocess one Sentinel-1 product by exact name."
+)
+parser.add_argument("s1_product_name")
+parser.add_argument("work_dir", help="Exact writable preprocessing directory.")
+args = parser.parse_args()
 
-S1names = [name.strip() for name in sys.argv[1].split(",") if name.strip()]
-folder = os.path.abspath(os.path.expanduser(sys.argv[2]))
-username = sys.argv[3]
-password = sys.argv[4]
+S1name = args.s1_product_name.removesuffix(".SAFE")
+workfolder = os.path.abspath(os.path.expanduser(args.work_dir))
+username = os.environ.get("CDSE_USERNAME", "")
+password = os.environ.get("CDSE_PASSWORD", "")
 
 if not username or not password:
     print("Copernicus Data Space username and password are required.")
     sys.exit(1)
 
-os.makedirs(folder, exist_ok=True)
+os.makedirs(workfolder, exist_ok=True)
+products = search_sentinel_with_S1name(S1name)
+if not products:
+    raise RuntimeError(f"Sentinel-1 product not found: {S1name}.SAFE")
+if len(products) > 1:
+    raise RuntimeError(f"Multiple catalogue products matched exact name: {S1name}")
 
-print(f"Processing: {S1names}")
-# print(f"Output folder: {folder}")
-
-for S1name in S1names:
-    workfolder = os.path.join(folder, S1name)
-    os.makedirs(workfolder, exist_ok=True)
-
-    df = search_sentinel_with_S1name(S1name)
+product = products[0]
+started = datetime.datetime.now()
+product_id = product["Id"]
+name = product["Name"]
+archive_path = os.path.join(workfolder, f"{name}.zip")
+if not os.path.isfile(archive_path):
     access_token = log_in(username, password)
+    download_Sentinel_with_ids_names(
+        product_id, name, workfolder, access_token
+    )
 
-    if len(df) == 0:
-        print("No images found")
-        shutil.rmtree(workfolder)
-    else:
-        for idx, row in df.iterrows():
-            try:
-                start_time_each_image = datetime.datetime.now()
-                ids = row["Id"]
-                name = row["Name"]
-                Sentinel_ori_dir = workfolder
-                Sentinel_1_GRD_file = os.path.join(workfolder, f'{name}.zip')
-                if not os.path.exists(Sentinel_1_GRD_file):
-                    access_token = log_in(username, password)
-                    download_Sentinel_with_ids_names(ids, name, Sentinel_ori_dir, access_token)
-                else:
-                    # print("Product already downloaded.")
-                    pass
-
-                print("Preprocessing SAR imagery...", end="", flush=True)
-                process_snentinel_images(Sentinel_1_GRD_file, workfolder)
-                incidence_process(workfolder)
-
-                interval_time = datetime.datetime.now()
-                print(f" completed in {interval_time - start_time_each_image}.")
-
-            except Exception as e:
-                print(f"Error processing {name}: {e}")
-                continue
+print("Preprocessing SAR imagery...", end="", flush=True)
+process_snentinel_images(archive_path, workfolder)
+incidence_process(workfolder)
+print(f" completed in {datetime.datetime.now() - started}.")

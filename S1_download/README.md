@@ -16,6 +16,8 @@ For each Sentinel-1 product name, the workflow runs the following steps:
    - Clips and reprojects the external global desert-mask VRT to the
      Sentinel-1 grid.
    - Preserves the mask classes using nearest-neighbour resampling.
+   - Produces an intermediate scene clip; RAPID intersects it with WorldCover
+     bare/sparse vegetation and saves only the effective exclusion mask.
 3. `cal_LIA.py`
    - Downloads Copernicus DEM tiles from Microsoft Planetary Computer.
    - Resolves orbit direction from a manifest, ZIP, public catalogue query, or
@@ -43,15 +45,12 @@ conda env create -f s1pro.yml
 conda activate s1pro
 ```
 
-The workflow also requires ESA SNAP. Make sure the SNAP `bin` directory is
-available on `PATH`. The current server-specific SNAP path is set in
-`Sentinel_1_specific_name_download_process.py` and may need to be changed on a
-different system.
+The download workflow also requires ESA SNAP. Make sure the SNAP `bin`
+directory is available on `PATH`, or set the `SNAP_BIN` environment variable.
 
-Copernicus Data Space credentials are only required when the optional
-Sentinel-1 download script is used. They are passed to that script as command
-line arguments. Existing local Gamma0 and incidence-angle inputs do not need
-Copernicus credentials.
+Copernicus Data Space credentials are only required when Sentinel-1 download
+is enabled. Set `CDSE_USERNAME` and `CDSE_PASSWORD`; existing local Gamma0 and
+incidence-angle inputs do not need credentials.
 
 ## Running the utilities
 
@@ -60,18 +59,22 @@ These utilities are part of the RAPID repository. Use the repository-level
 optional; when it is needed, the individual stages can be run manually:
 
 ```bash
+CDSE_USERNAME=... CDSE_PASSWORD=... \
 python Sentinel_1_specific_name_download_process.py \
-  <S1_PRODUCT_NAME> <OUTPUT_FOLDER> <USERNAME> <PASSWORD>
-python Desert_mask.py <S1_PRODUCT_NAME> <OUTPUT_FOLDER> <DESERT_MASK_VRT>
-python cal_LIA.py <S1_PRODUCT_NAME> <OUTPUT_FOLDER>
-python Snow_detect.py <S1_PRODUCT_NAME> <OUTPUT_FOLDER>
+  <S1_PRODUCT_NAME> <EXACT_WRITABLE_WORK_DIR>
+python Desert_mask.py <REFERENCE_GAMMA0> <DESERT_MASK_VRT> <OUTPUT_TIF>
+python cal_LIA.py <S1_PRODUCT_NAME> <WRITABLE_WORK_DIR> \
+  --incidence-angle <ELLIPSOID_INCIDENCE_ANGLE> \
+  --metadata-dir <READ_ONLY_S1_SCENE_DIR>
+python Snow_detect.py <S1_PRODUCT_NAME> <REFERENCE_GAMMA0> <WRITABLE_OUTPUT_DIR>
 ```
 
 If LIA orbit direction cannot be obtained automatically, provide it directly:
 
 ```bash
-python cal_LIA.py <S1_PRODUCT_NAME> <OUTPUT_FOLDER> \
+python cal_LIA.py <S1_PRODUCT_NAME> <WRITABLE_WORK_DIR> \
   --incidence-angle /path/to/incidence_angle.tif \
+  --metadata-dir /path/to/read_only_scene \
   --orbit-direction ASCENDING
 ```
 
@@ -90,19 +93,24 @@ RAPID without `--inc_angle_path`. Alternatively, pass the original
 unnormalized rasters and `--inc_angle_path` directly to RAPID and omit this
 separate normalization step.
 
-## Output structure
+## Pipeline output structure
 
 Each Sentinel-1 product is written to its own subdirectory:
 
 ```text
-<OUTPUT_FOLDER>/
+<OUTPUT_ROOT>/
 +-- <S1_PRODUCT_NAME>/
-    +-- Gamma0_VV.tif
-    +-- Gamma0_VH.tif
-    +-- <S1_PRODUCT_NAME>_desert.tif
-    +-- <S1_PRODUCT_NAME>_LIA.tif
-    +-- <S1_PRODUCT_NAME>_ice.tif
-    +-- <S1_PRODUCT_NAME>_cloud.tif
+    +-- preprocessing/
+    |   +-- Gamma0_VV.tif
+    |   +-- Gamma0_VH.tif
+    |   +-- snow_mask.tif
+    |   +-- cloud_mask.tif
+    |   +-- lia_mask.tif
+    +-- masks/
+        +-- snow_mask.tif
+        +-- cloud_mask.tif
+        +-- lia_mask.tif
+        +-- desert_mask.tif
 ```
 
 Intermediate SNAP output files are removed after successful completion.
