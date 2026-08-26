@@ -2,12 +2,16 @@ import argparse
 import datetime
 import glob
 import os
+import sys
+import zipfile
 from sys import stdout
 
 import numpy as np
+import rasterio
 import requests
-from osgeo import gdal
 from pyroSAR.snap.util import geocode
+from rasterio.enums import Resampling
+from rasterio.vrt import WarpedVRT
 
 snap_bin = os.environ.get("SNAP_BIN")
 if snap_bin:
@@ -91,53 +95,147 @@ def process_snentinel_images(file, processed_path):
 
 
 def incidence_process(VV_VH_incidence_path):
-    ds1 = gdal.Open(glob.glob(f"{VV_VH_incidence_path}/*VV_gamma0-elp.tif")[0])
-    band1 = ds1.GetRasterBand(1).ReadAsArray().astype(float)
+    def exactly_one(pattern, label):
+        matches = sorted(glob.glob(os.path.join(VV_VH_incidence_path, pattern)))
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Expected exactly one {label}, found {len(matches)}"
+            )
+        return matches[0]
 
-    ds2 = gdal.Open(glob.glob(f"{VV_VH_incidence_path}/*VH_gamma0-elp.tif")[0])
-    band2 = ds2.GetRasterBand(1).ReadAsArray().astype(float)
+    vv_path = exactly_one("*VV_gamma0-elp.tif", "raw VV Gamma0 raster")
+    vh_path = exactly_one("*VH_gamma0-elp.tif", "raw VH Gamma0 raster")
+    angle_path = exactly_one(
+        "*incidenceAngleFromEllipsoid.tif", "ellipsoid incidence-angle raster"
+    )
+    output_paths = {
+        "VV": os.path.join(VV_VH_incidence_path, "Gamma0_VV.tif"),
+        "VH": os.path.join(VV_VH_incidence_path, "Gamma0_VH.tif"),
+    }
+    temporary_paths = {
+        key: f"{path}.partial.tif" for key, path in output_paths.items()
+    }
 
-    ds3 = gdal.Open(glob.glob(f"{VV_VH_incidence_path}/*incidenceAngleFromEllipsoid.tif")[0])
-    band3 = ds3.GetRasterBand(1).ReadAsArray().astype(float)
+    try:
+        with (
+            rasterio.open(vv_path) as vv,
+            rasterio.open(vh_path) as vh,
+            rasterio.open(angle_path) as angle,
+        ):
+            if (
+                vv.count != 1
+                or vh.count != 1
+                or angle.count != 1
+                or vv.crs is None
+                or vh.crs is None
+                or angle.crs is None
+            ):
+                raise ValueError(
+                    "VV, VH, and incidence angle must be georeferenced "
+                    "single-band rasters"
+                )
+            if (
+                vv.width != vh.width
+                or vv.height != vh.height
+                or vv.crs != vh.crs
+                or not vv.transform.almost_equals(vh.transform)
+            ):
+                raise ValueError("Raw VV and VH rasters do not use the same grid")
 
-    # Normalize backscatter using the ellipsoid incidence angle.
-    cos_band = np.cos(np.deg2rad(band3))
+            profile = vv.profile.copy()
+            profile.update(
+                driver="GTiff", count=1, dtype="float32", nodata=-9999.0,
+                compress="deflate", predictor=3, tiled=True,
+                blockxsize=256, blockysize=256, BIGTIFF="IF_SAFER",
+            )
+            with (
+                WarpedVRT(
+                    angle,
+                    crs=vv.crs,
+                    transform=vv.transform,
+                    width=vv.width,
+                    height=vv.height,
+                    resampling=Resampling.bilinear,
+                    nodata=np.nan,
+                ) as aligned_angle,
+                rasterio.open(temporary_paths["VV"], "w", **profile) as out_vv,
+                rasterio.open(temporary_paths["VH"], "w", **profile) as out_vh,
+            ):
+                for _, window in vv.block_windows(1):
+                    vv_values = vv.read(1, window=window, masked=True).astype(
+                        np.float32
+                    ).filled(np.nan)
+                    vh_values = vh.read(1, window=window, masked=True).astype(
+                        np.float32
+                    ).filled(np.nan)
+                    angle_values = aligned_angle.read(
+                        1, window=window, masked=True
+                    ).astype(np.float32).filled(np.nan)
+                    cosine = np.cos(np.deg2rad(angle_values)).astype(np.float32)
+                    valid = (
+                        np.isfinite(vv_values)
+                        & np.isfinite(vh_values)
+                        & (vv_values >= 0)
+                        & (vh_values >= 0)
+                        & np.isfinite(angle_values)
+                        & (angle_values > 0)
+                        & (angle_values < 90)
+                        & np.isfinite(cosine)
+                        & (cosine > 0)
+                    )
+                    normalized_vv = np.full(vv_values.shape, -9999.0, np.float32)
+                    normalized_vh = np.full(vh_values.shape, -9999.0, np.float32)
+                    np.divide(vv_values, cosine, out=normalized_vv, where=valid)
+                    np.divide(vh_values, cosine, out=normalized_vh, where=valid)
+                    out_vv.write(normalized_vv, 1, window=window)
+                    out_vh.write(normalized_vh, 1, window=window)
 
-    result1 = band1 / cos_band
+        for key, final_path in output_paths.items():
+            os.replace(temporary_paths[key], final_path)
+    finally:
+        for temporary_path in temporary_paths.values():
+            if os.path.isfile(temporary_path):
+                os.remove(temporary_path)
 
-    driver = gdal.GetDriverByName('GTiff')
-    out_ds = driver.Create(f"{VV_VH_incidence_path}/Gamma0_VV.tif",
-                           ds1.RasterXSize,
-                           ds1.RasterYSize,
-                           1,
-                           gdal.GDT_Float32)
 
-    out_ds.SetGeoTransform(ds1.GetGeoTransform())
-    out_ds.SetProjection(ds1.GetProjection())
+def valid_single_band_raster(path):
+    if not os.path.isfile(path):
+        return False
+    try:
+        with rasterio.open(path) as src:
+            return (
+                src.count == 1
+                and src.width > 0
+                and src.height > 0
+                and src.crs is not None
+            )
+    except (OSError, rasterio.errors.RasterioError):
+        return False
 
-    out_band = out_ds.GetRasterBand(1)
-    out_band.WriteArray(result1)
-    out_band.SetNoDataValue(np.nan)
 
-    result2 = band2 / cos_band
-    driver = gdal.GetDriverByName('GTiff')
-    out_ds = driver.Create(f"{VV_VH_incidence_path}/Gamma0_VH.tif",
-                           ds1.RasterXSize,
-                           ds1.RasterYSize,
-                           1,
-                           gdal.GDT_Float32)
+def preprocessing_complete(workfolder):
+    angle_paths = sorted(
+        glob.glob(os.path.join(workfolder, "*incidenceAngleFromEllipsoid.tif"))
+    )
+    paths = [
+        os.path.join(workfolder, "Gamma0_VV.tif"),
+        os.path.join(workfolder, "Gamma0_VH.tif"),
+        *angle_paths,
+    ]
+    return len(angle_paths) == 1 and all(valid_single_band_raster(p) for p in paths)
 
-    out_ds.SetGeoTransform(ds1.GetGeoTransform())
-    out_ds.SetProjection(ds1.GetProjection())
 
-    out_band = out_ds.GetRasterBand(1)
-    out_band.WriteArray(result2)
-    out_band.SetNoDataValue(np.nan)
-
-    out_ds.FlushCache()
-    out_ds = None
-    ds1 = None
-    ds2 = None
+def remove_incomplete_derivatives(workfolder):
+    patterns = (
+        "Gamma0_VV.tif", "Gamma0_VH.tif", "*.partial.tif",
+        "*VV_gamma0-elp.tif", "*VH_gamma0-elp.tif",
+        "*incidenceAngleFromEllipsoid.tif", "*localIncidenceAngle.tif",
+        "*_manifest.safe", "*_proc.xml",
+    )
+    for pattern in patterns:
+        for path in glob.glob(os.path.join(workfolder, pattern)):
+            if os.path.isfile(path):
+                os.remove(path)
 
 parser = argparse.ArgumentParser(
     description="Download and preprocess one Sentinel-1 product by exact name."
@@ -156,6 +254,10 @@ if not username or not password:
     sys.exit(1)
 
 os.makedirs(workfolder, exist_ok=True)
+if preprocessing_complete(workfolder):
+    print("Sentinel-1 preprocessing outputs already complete; reusing them.")
+    raise SystemExit(0)
+
 products = search_sentinel_with_S1name(S1name)
 if not products:
     raise RuntimeError(f"Sentinel-1 product not found: {S1name}.SAFE")
@@ -167,6 +269,10 @@ started = datetime.datetime.now()
 product_id = product["Id"]
 name = product["Name"]
 archive_path = os.path.join(workfolder, f"{name}.zip")
+remove_incomplete_derivatives(workfolder)
+if os.path.isfile(archive_path) and not zipfile.is_zipfile(archive_path):
+    print("Existing Sentinel-1 archive is incomplete; downloading it again.")
+    os.remove(archive_path)
 if not os.path.isfile(archive_path):
     access_token = log_in(username, password)
     download_Sentinel_with_ids_names(
@@ -176,4 +282,6 @@ if not os.path.isfile(archive_path):
 print("Preprocessing SAR imagery...", end="", flush=True)
 process_snentinel_images(archive_path, workfolder)
 incidence_process(workfolder)
+if not preprocessing_complete(workfolder):
+    raise RuntimeError("Sentinel-1 preprocessing did not produce complete outputs")
 print(f" completed in {datetime.datetime.now() - started}.")

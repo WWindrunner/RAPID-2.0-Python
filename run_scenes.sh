@@ -110,19 +110,15 @@ for scene in "$@"; do
         mkdir -p -- "$preprocess_dir"
         rapid_vv="$preprocess_dir/Gamma0_VV.tif"
         rapid_vh="$preprocess_dir/Gamma0_VH.tif"
+        if ! conda run -n "$s1pro_env" python \
+            "$script_dir/S1_download/Sentinel_1_specific_name_download_process.py" \
+            "$scene" "$preprocess_dir"; then
+            echo "[$scene] Sentinel-1 download/preprocessing failed; continuing." >&2
+            failed+=("$scene:S1-download")
+            continue
+        fi
         incidence=$(find "$preprocess_dir" -maxdepth 1 -type f \
             -name '*incidenceAngleFromEllipsoid.tif' -print -quit)
-        if [[ ! -f "$rapid_vv" || ! -f "$rapid_vh" || -z "$incidence" ]]; then
-            if ! conda run -n "$s1pro_env" python \
-                "$script_dir/S1_download/Sentinel_1_specific_name_download_process.py" \
-                "$scene" "$preprocess_dir"; then
-                echo "[$scene] Sentinel-1 download/preprocessing failed; continuing." >&2
-                failed+=("$scene:S1-download")
-                continue
-            fi
-            incidence=$(find "$preprocess_dir" -maxdepth 1 -type f \
-                -name '*incidenceAngleFromEllipsoid.tif' -print -quit)
-        fi
         if [[ ! -f "$rapid_vv" || ! -f "$rapid_vh" || -z "$incidence" ]]; then
             echo "[$scene] downloaded preprocessing outputs are incomplete." >&2
             failed+=("$scene:S1-preprocessing")
