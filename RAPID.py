@@ -59,6 +59,7 @@ def normalize_args(args):
         "distThBatchSize",
         "distThWindowsPerTask",
         "distThSampleSize",
+        "SBAWinSize",
         "morphPreBlockSize",
         "morphPrePatchSize",
         "blockSizeMorph",
@@ -247,6 +248,9 @@ def parse(config_json=None):
 
     parser.add_argument('--distThWindowsPerTask', type=int, default=20,
                         help='Number of adjacent dist_th windows evaluated by one Dask task. Default 20.')
+
+    parser.add_argument('--SBAWinSize', type=int, default=100,
+                        help='Base dist_th window size; the evaluated core window is half this value. Default 100 (50x50-pixel core).')
 
     parser.add_argument('--distThRPW', nargs=2, type=float, default=[0.01, 0.9],
                         help='PW ratio thresholds [hasPW, isPW] used in dist_th worker. Default [0.01, 0.9].')
