@@ -67,8 +67,8 @@ def generate_s2_masks(product_name, reference_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     workspace = os.path.join(output_dir, "snow_temp")
     os.makedirs(workspace, exist_ok=True)
-    snow_out = os.path.join(output_dir, "snow_mask.tif")
-    cloud_out = os.path.join(output_dir, "cloud_mask.tif")
+    snow_out = os.path.join(output_dir, f"{product_name}_ice.tif")
+    cloud_out = os.path.join(output_dir, f"{product_name}_cloud.tif")
 
     with rasterio.open(reference_path) as reference:
         if reference.crs is None:

@@ -293,7 +293,7 @@ with rasterio.open(dem_merge_resample, "w", **profile) as dst:
     dst.write(dem_reproj.astype(np.float32), 1)
 
 dem_resample_path = os.path.join(path, f"DEM_merged_res.tif")
-LIA_path = os.path.join(path, "lia_mask.tif")
+LIA_path = os.path.join(path, f"{S1name}_LIA.tif")
 
 
 with rasterio.open(dem_resample_path) as src:

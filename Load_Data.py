@@ -379,10 +379,10 @@ def Load_Data(args):
         ).astype(np.uint8)
 
     masks_to_save = (
-        (ds.lia, "lia_mask.tif"),
-        (getattr(ds, "ice_mask", None), "snow_mask.tif"),
-        (ds.cloud_mask, "cloud_mask.tif"),
-        (ds.desert_mask, "desert_mask.tif"),
+        (ds.lia, f"{args.granules}_LIA.tif"),
+        (getattr(ds, "ice_mask", None), f"{args.granules}_ice.tif"),
+        (ds.cloud_mask, f"{args.granules}_cloud.tif"),
+        (ds.desert_mask, f"{args.granules}_desert.tif"),
     )
     for mask, filename in masks_to_save:
         if mask is not None:

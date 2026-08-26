@@ -183,7 +183,7 @@ for scene in "$@"; do
             continue
         fi
 
-        desert="$preprocess_dir/raw_desert_mask.tif"
+        desert="$preprocess_dir/${scene}_desert.tif"
         if [[ -n "$desert_mask_vrt" ]]; then
             if [[ ! -f "$desert_mask_vrt" ]]; then
                 echo "[$scene] DESERT_MASK_VRT does not exist: $desert_mask_vrt" >&2
@@ -206,10 +206,10 @@ for scene in "$@"; do
     fi
 
     rapid_mask_args=()
-    lia="$preprocess_dir/lia_mask.tif"
-    ice="$preprocess_dir/snow_mask.tif"
-    cloud="$preprocess_dir/cloud_mask.tif"
-    desert="$preprocess_dir/raw_desert_mask.tif"
+    lia="$preprocess_dir/${scene}_LIA.tif"
+    ice="$preprocess_dir/${scene}_ice.tif"
+    cloud="$preprocess_dir/${scene}_cloud.tif"
+    desert="$preprocess_dir/${scene}_desert.tif"
     if [[ "$generate_masks" == false ]]; then
         [[ -f "$scene_dir/${scene}_LIA.tif" ]] && lia="$scene_dir/${scene}_LIA.tif"
         [[ -f "$scene_dir/${scene}_ice.tif" ]] && ice="$scene_dir/${scene}_ice.tif"

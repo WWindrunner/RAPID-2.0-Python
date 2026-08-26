@@ -100,14 +100,14 @@ Each Sentinel-1 product is written to its own subdirectory:
     +-- preprocessing/
     |   +-- Gamma0_VV.tif
     |   +-- Gamma0_VH.tif
-    |   +-- snow_mask.tif
-    |   +-- cloud_mask.tif
-    |   +-- lia_mask.tif
+    |   +-- <S1_PRODUCT_NAME>_ice.tif
+    |   +-- <S1_PRODUCT_NAME>_cloud.tif
+    |   +-- <S1_PRODUCT_NAME>_LIA.tif
     +-- masks/
-        +-- snow_mask.tif
-        +-- cloud_mask.tif
-        +-- lia_mask.tif
-        +-- desert_mask.tif
+        +-- <S1_PRODUCT_NAME>_ice.tif
+        +-- <S1_PRODUCT_NAME>_cloud.tif
+        +-- <S1_PRODUCT_NAME>_LIA.tif
+        +-- <S1_PRODUCT_NAME>_desert.tif
 ```
 
 Intermediate preprocessing files are removed after successful completion.

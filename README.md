@@ -123,7 +123,7 @@ Example:
     ]
   ],
   "inc_angle_path": "/path/to/scene_001/ellipsoid_incidence_angle.tif",
-  "LIA_path": "/path/to/scene_001/lia_mask.tif",
+  "LIA_path": "/path/to/scene_001/scene_001_LIA.tif",
   "ice_mask_path": "/path/to/scene_001/snow_ice_mask.tif",
   "cloud_mask_path": "/path/to/scene_001/cloud_reference_mask.tif",
   "desert_mask_path": "/path/to/scene_001/desert_dark_area_mask.tif",
@@ -235,10 +235,10 @@ saves the four aligned uint8 products under each result scene:
 
 ```text
 <OUTPUT_ROOT>/<S1_PRODUCT>/masks/
-├── snow_mask.tif
-├── cloud_mask.tif
-├── lia_mask.tif
-└── desert_mask.tif
+├── <S1_PRODUCT>_ice.tif
+├── <S1_PRODUCT>_cloud.tif
+├── <S1_PRODUCT>_LIA.tif
+└── <S1_PRODUCT>_desert.tif
 ```
 
 Values are `0` (false), `1` (true), and `255` (nodata). The saved desert mask
