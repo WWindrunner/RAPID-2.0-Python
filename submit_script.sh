@@ -19,6 +19,8 @@ cd "$project_root"
 export S1PRO_ENV="s1pro"
 export RAPID_ENV="RAPID_python"
 export OUTPUT_ROOT="/path/to/results"
+# Optional: keep downloaded/normalized Gamma0 source data outside OUTPUT_ROOT.
+# export PREPROCESS_ROOT="/path/to/preprocessed-data"
 export DESERT_MASK_VRT="/path/to/global_desert_mask.vrt"
 export RAPID_SCRATCH_ROOT="${SLURM_TMPDIR:-/tmp}"
 

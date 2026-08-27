@@ -7,6 +7,7 @@
 #   INPUT_ROOT   only when DOWNLOAD_S1=false
 #
 # Optional environment variables:
+#   PREPROCESS_ROOT=             optional root for per-scene source products
 #   DOWNLOAD_S1=true
 #   CDSE_USERNAME / CDSE_PASSWORD (required when DOWNLOAD_S1=true)
 #   S1PRO_ENV=s1pro
@@ -33,6 +34,7 @@ set -u
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 input_root=${INPUT_ROOT:-}
 output_root=${OUTPUT_ROOT:-}
+preprocess_root=${PREPROCESS_ROOT:-}
 s1pro_env=${S1PRO_ENV:-s1pro}
 rapid_env=${RAPID_ENV:-RAPID_python}
 preprocess_gamma=${PREPROCESS_GAMMA:-true}
@@ -72,6 +74,9 @@ case "${generate_masks,,}" in
 esac
 
 output_root=$(realpath -m -- "$output_root")
+if [[ -n "$preprocess_root" ]]; then
+    preprocess_root=$(realpath -m -- "$preprocess_root")
+fi
 if [[ "$download_s1" == false ]]; then
     if [[ -z "$input_root" ]]; then
         echo "Set INPUT_ROOT when DOWNLOAD_S1=false." >&2
@@ -87,6 +92,14 @@ if [[ "$download_s1" == false ]]; then
             exit 2
             ;;
     esac
+    if [[ -n "$preprocess_root" ]]; then
+        case "$preprocess_root/" in
+            "$input_root/"|"$input_root/"*)
+                echo "PREPROCESS_ROOT must not be the input directory or one of its subdirectories." >&2
+                exit 2
+                ;;
+        esac
+    fi
 else
     if [[ -z "${CDSE_USERNAME:-}" || -z "${CDSE_PASSWORD:-}" ]]; then
         echo "Set CDSE_USERNAME and CDSE_PASSWORD when DOWNLOAD_S1=true." >&2
@@ -94,14 +107,20 @@ else
     fi
 fi
 mkdir -p -- "$output_root"
+if [[ -n "$preprocess_root" ]]; then
+    mkdir -p -- "$preprocess_root"
+fi
 
 successful=()
 failed=()
 
 for scene in "$@"; do
     scene_output="$output_root/$scene"
-    preprocess_dir="$scene_output/preprocessing"
-    scene_scratch="$scratch_root/rapid_${SLURM_JOB_ID:-$$}_$scene"
+    if [[ -n "$preprocess_root" ]]; then
+        preprocess_dir="$preprocess_root/$scene"
+    else
+        preprocess_dir="$scene_output/preprocessing"
+    fi
     generated_desert=false
 
     echo "[$scene] starting"
@@ -217,11 +236,10 @@ for scene in "$@"; do
     [[ -f "$cloud" ]] && rapid_mask_args+=(--cloud_mask_path "$cloud")
     [[ -f "$desert" ]] && rapid_mask_args+=(--desert_mask_path "$desert")
 
-    mkdir -p -- "$scene_scratch"
     if conda run -n "$rapid_env" python -u "$script_dir/RAPID.py" \
         "$rapid_vv" "$rapid_vh" "$output_root" \
         --granules "$scene" \
-        --scratch_dir "$scene_scratch" \
+        --scratch_dir "$scratch_root" \
         "${rapid_incidence_args[@]}" \
         "${rapid_mask_args[@]}"; then
         successful+=("$scene")

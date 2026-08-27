@@ -160,7 +160,8 @@ Key environment variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OUTPUT_ROOT` | required | Root for every generated file and final result |
+| `OUTPUT_ROOT` | required | Root for final RAPID scene results |
+| `PREPROCESS_ROOT` | `<OUTPUT_ROOT>/<scene>/preprocessing` | Optional separate root for per-scene Gamma0 and preprocessing data |
 | `DOWNLOAD_S1` | `true` | Download by exact product name or use local inputs |
 | `INPUT_ROOT` | none | Required only when `DOWNLOAD_S1=false` |
 | `CDSE_USERNAME`, `CDSE_PASSWORD` | none | Required only for automatic S1 download |
@@ -184,7 +185,10 @@ bash run_scenes.sh S1_PRODUCT_1 S1_PRODUCT_2
 ```
 
 Downloaded S1 data, preprocessing products, normalized Gamma0, and mask intermediates
-are all written under `<OUTPUT_ROOT>/<S1_PRODUCT>/preprocessing/`. After the
+are written under `<OUTPUT_ROOT>/<S1_PRODUCT>/preprocessing/` by default. Set
+`PREPROCESS_ROOT=/path/to/preprocessed-data` to place them under
+`<PREPROCESS_ROOT>/<S1_PRODUCT>/` instead, while final RAPID products remain
+under `OUTPUT_ROOT`. After the
 scene completes successfully, the downloaded ZIP and disposable preprocessing products
 are removed; failed-scene intermediates are retained for diagnosis.
 
@@ -192,8 +196,9 @@ For existing local scenes, set `DOWNLOAD_S1=false`. Each read-only input folder
 must contain `Gamma0_VV.tif`, `Gamma0_VH.tif`, and
 `incidenceAngleFromEllipsoid.tif` (names can be overridden with environment
 variables). Generated data is written under the corresponding output scene's
-`preprocessing/` directory. `OUTPUT_ROOT` must be separate from `INPUT_ROOT`
-and cannot be one of its subdirectories:
+`preprocessing/` directory, or under `<PREPROCESS_ROOT>/<S1_PRODUCT>/` when
+that variable is set. `OUTPUT_ROOT` and `PREPROCESS_ROOT` must not be the local
+input directory or one of its subdirectories:
 
 ```bash
 DOWNLOAD_S1=false \
@@ -244,8 +249,9 @@ saves the four aligned uint8 products under each result scene:
 Values are `0` (false), `1` (true), and `255` (nodata). The saved desert mask
 is the effective WorldCover intersection, not the full input desert layer.
 Generated normalized Gamma0 and pre-RAPID masks are kept under
-`<OUTPUT_ROOT>/<S1_PRODUCT>/preprocessing/`; user-provided input files are
-never overwritten or deleted.
+`<OUTPUT_ROOT>/<S1_PRODUCT>/preprocessing/`, or the configured
+`<PREPROCESS_ROOT>/<S1_PRODUCT>/`; user-provided input files are never
+overwritten or deleted.
 
 
 ## Main Output
