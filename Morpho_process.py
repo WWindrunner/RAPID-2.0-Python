@@ -1259,6 +1259,35 @@ def morph_block_worker(
     thqp_high = np.maximum(thqp_high_a, thqp_high_b).astype(np.float32, copy=False)
     del thqp_high_a, thqp_high_b
 
+    # Recover permanent-water seeds that were completely missed by the
+    # initial classification. Only a few reliable pixels are needed here;
+    # the existing permanent-water region growing below expands them within
+    # the LCC water mask. ESA WorldCover class 80 is permanent water.
+    valid_pp_rescue = (
+        np.isfinite(Ipp)
+        & np.isfinite(thpp_high)
+        & (Ipp < thpp_high)
+    )
+    valid_qp_rescue = (
+        np.isfinite(Iqp)
+        & np.isfinite(thqp_high)
+        & (Iqp < thqp_high)
+    )
+    maskPWRescue = (
+        (LCC == 80)
+        & (rasWB == 0)
+        & (~maskOut)
+        & (valid_pp_rescue | valid_qp_rescue)
+    )
+
+    if np.any(maskPWRescue):
+        rasWB[maskPWRescue] = 1
+        maskPWHighCred |= maskPWRescue
+        thppM[maskPWRescue] = thpp_high[maskPWRescue]
+        thqpM[maskPWRescue] = thqp_high[maskPWRescue]
+
+    del valid_pp_rescue, valid_qp_rescue, maskPWRescue
+
     # ---- moderate-threshold layer ----
     thpp_mod = None
     if len(idx_vv) >= 2:
