@@ -304,8 +304,8 @@ def parse(config_json=None):
     parser.add_argument('--optMorph', type=str, default='LCC_only',
                         help='Morph algorithm option. Default LCC_only.')
 
-    parser.add_argument('--WBClasses', nargs='*', type=int, default=[80, 90, 95],
-                        help='LCC water classes used in morphology. Default [80, 90, 95].')
+    parser.add_argument('--WBClasses', nargs='*', type=int, default=[80],
+                        help='LCC permanent-water class used in morphology. Default [80].')
 
     parser.add_argument('--nWBClasses', nargs='*', type=int, default=[50],
                         help='LCC non-water / built-up classes used for removal tests. Default [50].')

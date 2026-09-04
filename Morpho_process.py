@@ -1893,7 +1893,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
         thGlobal_db = np.full(3, np.nan, dtype=float)
         thGlobal = np.full(3, np.nan, dtype=float)
 
-    WBClasses = np.asarray(getattr(args_vv, "WBClasses", [80, 90, 95]), dtype=int)
+    WBClasses = np.asarray(getattr(args_vv, "WBClasses", [80]), dtype=int)
     EXClasses = np.asarray(getattr(args_vv, "EXClasses", []), dtype=int)
     nWBClasses = np.asarray(getattr(args_vv, "nWBClasses", [50]), dtype=int)
 
