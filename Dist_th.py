@@ -83,9 +83,23 @@ def solve4GMM(nmodes: int, I_linear: np.ndarray, mu0=None, std0=None, pc0=None, 
     sigma_std = sigma_std[idx]
     pc = pc[idx]
 
-    # histogram peakDensity on dB original scale
-    hist_vals, _ = np.histogram(I_db, bins=50, density=True)
-    peakDensity = float(np.max(hist_vals)) if hist_vals.size > 0 else 1.0
+    # Histogram peak density on the original dB scale.  Passing an integer
+    # bin count selects NumPy's optimized equal-width path.  For data with a
+    # very large dynamic range that path can produce an out-of-range bin
+    # index because of floating-point scaling.  Explicit edges select the
+    # search-sorted path and avoid that failure.
+    db_min = float(np.min(I_db))
+    db_max = float(np.max(I_db))
+    bin_edges = np.linspace(db_min, db_max, 51, dtype=np.float64)
+
+    if not np.all(np.isfinite(bin_edges)) or np.any(np.diff(bin_edges) <= 0):
+        peakDensity = 1.0
+    else:
+        hist_counts, _ = np.histogram(I_db, bins=bin_edges, density=False)
+        bin_widths = np.diff(bin_edges)
+        hist_density = hist_counts.astype(np.float64) / (I_db.size * bin_widths)
+        finite_density = hist_density[np.isfinite(hist_density)]
+        peakDensity = float(np.max(finite_density)) if finite_density.size else 1.0
 
     thresholds_std = np.zeros((max(nmodes - 1, 0),), dtype=float)
     RH = np.zeros((max(nmodes - 1, 0),), dtype=float)
