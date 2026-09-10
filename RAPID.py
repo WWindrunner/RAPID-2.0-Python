@@ -408,6 +408,21 @@ def dup_args(args, filepath, granuele_name, wotif=None):
     return args_new
 
 
+def _warmup_gmm_runtime():
+    """Initialize sklearn's lazy native-library controller before task threads."""
+    import time
+    import numpy as np
+    from sklearn.mixture import GaussianMixture
+
+    started = time.perf_counter()
+    print("[Dask setup] initializing GMM runtime before accepting scene tasks ...", flush=True)
+    # Exercise the same default KMeans initialization as solve4GMM, with a
+    # disposable model and a private seed; no scene data or global RNG changes.
+    sample = np.asarray([-3.2, -3.1, -2.9, -2.8, 2.8, 2.9, 3.1, 3.2]).reshape(-1, 1)
+    GaussianMixture(n_components=2, n_init=1, max_iter=20, random_state=0).fit(sample)
+    print(f"[Dask setup] GMM runtime ready in {time.perf_counter() - started:.1f}s", flush=True)
+
+
 def setup_dask_from_slurm(scratch_dir=None):
     """
     Setup Dask LocalCluster based on SLURM environment.
@@ -442,6 +457,11 @@ def setup_dask_from_slurm(scratch_dir=None):
     use_processes = os.environ.get("DASK_USE_PROCESSES", "0") == "1"
 
     if not use_processes:
+        # Both resume modes can skip the earlier GMM fits. Native stacks from
+        # a stalled run showed NumPy backtrace waiting for dl_iterate_phdr while
+        # threadpoolctl's callback waited to resume Python: initialize sklearn's
+        # cached controller before any concurrent NumPy scene tasks can run.
+        _warmup_gmm_runtime()
         n_workers = 1
         threads_per_worker = ncpus
         if rapid_memory_limit:
@@ -482,6 +502,23 @@ def setup_dask_from_slurm(scratch_dir=None):
             local_directory=scratch_dir,
         )
         client = Client(cluster)
+
+        # Each process has its own sklearn controller. Plugin setup completes
+        # before scene submission and also runs on replacement workers.
+        from dask.distributed import WorkerPlugin
+
+        class GMMRuntimePlugin(WorkerPlugin):
+            def setup(self, worker):
+                _warmup_gmm_runtime()
+
+        try:
+            client.register_plugin(GMMRuntimePlugin(), name="rapid-gmm-runtime")
+        except Exception:
+            try:
+                client.close()
+            finally:
+                cluster.close()
+            raise
 
         print("Dask LocalCluster started (PROCESS MODE).")
         print("  workers:", n_workers)

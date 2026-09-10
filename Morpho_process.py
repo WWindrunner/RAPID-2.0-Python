@@ -4,6 +4,7 @@ import dask.array as da
 from itertools import product
 import rasterio
 import os
+import time
 import psutil
 from scipy import ndimage
 import dask.dataframe as dd
@@ -369,7 +370,8 @@ def morph_pre_scene(scene_pack, blockSize=None):
                 "VHDetected": VHDetected,
             }
             print(
-                f"[morph_pre_scene] loaded checkpoint -> {fileOut}",
+                f"[morph_pre_scene] loaded checkpoint -> {fileOut}; "
+                "skipping morph_pre and continuing with final morph blocks",
                 flush=True,
             )
             if MORPH_DEBUG_VH:
@@ -424,7 +426,23 @@ def morph_pre_scene(scene_pack, blockSize=None):
     thDist2Mean = float(getattr(args_co, "morphPreDist2Mean", 0.1))
     codePW = int(getattr(args_co, "codePW", 80))
 
+    batch_size = 32
+    total_blocks = int(nR) * int(nC)
+    print("searching for highly credible threshold ...", flush=True)
+    print(f"[morph_pre] blocks={total_blocks}, batch_size={batch_size}, "
+          f"VH diagnostics={MORPH_DEBUG_VH}", flush=True)
+    results = []
     tasks = []
+
+    def flush_pre_batch():
+        started = time.perf_counter()
+        print(f"[morph_pre] submitting blocks {len(results) + 1}-"
+              f"{len(results) + len(tasks)}/{total_blocks} ...", flush=True)
+        results.extend(dask.compute(*tasks))
+        tasks.clear()
+        print(f"[morph_pre] completed {len(results)}/{total_blocks} blocks; "
+              f"batch elapsed={time.perf_counter() - started:.1f}s", flush=True)
+
     for iR in range(int(nR)):
         rr0 = int(r0_read[iR])
         rrn = int(nRows_read[iR])
@@ -463,9 +481,11 @@ def morph_pre_scene(scene_pack, blockSize=None):
             )
 
             tasks.append(task)
+            if len(tasks) >= batch_size:
+                flush_pre_batch()
 
-    print("searching for highly credible threshold ...")
-    results = dask.compute(*tasks)
+    if tasks:
+        flush_pre_batch()
 
     thBimodal_all = []
     VHDetectedHigh = 0
@@ -2080,11 +2100,13 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
         if not pending_tasks:
             return [], finished_blocks
 
-        # print(
-        #     f"[morph_proc_scene_main] submitting batch {batch_id} "
-        #     f"with {len(pending_tasks)} block(s)",
-        #     flush=True
-        # )
+        started = time.perf_counter()
+        print(
+            f"[morph_proc_scene_main] submitting batch {batch_id} "
+            f"with {len(pending_tasks)} block(s); "
+            f"completed {finished_blocks}/{total_blocks}",
+            flush=True,
+        )
 
         batch_results = dask.compute(*pending_tasks)
 
@@ -2095,7 +2117,8 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
 
         print(
             f"[morph_proc_scene_main] finished batch {batch_id}; "
-            f"completed {finished_blocks}/{total_blocks} blocks",
+            f"completed {finished_blocks}/{total_blocks} blocks; "
+            f"batch elapsed={time.perf_counter() - started:.1f}s",
             flush=True
         )
 
