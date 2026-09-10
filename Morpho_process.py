@@ -18,6 +18,9 @@ from collections import deque
 
 
 # Morph debug: set True to write the block index and selected block outputs.
+# Print VH enable diagnostics only; does not save diagnostic files/checkpoints.
+MORPH_DEBUG_VH = False
+
 MORPH_DEBUG_SAVE = False
 # Fill with zero-based (row, col), for example [(10, 20), (15, 8)].
 MORPH_DEBUG_BLOCKS = []
@@ -63,6 +66,66 @@ def countPixels(rasWBCo, rasWBCross, isOcean, targets):
     VHDetectedHigh = int(np.count_nonzero(mask2))
 
     return VHDetectedHigh, VHDetected
+
+
+def _vh_diagnostics(co, cross, ocean, lcc, idx_cross, n_classes):
+    """Diagnostic counts only: finite paired labels, non-overlapping core."""
+    valid = (ocean == 0) & np.isfinite(co) & np.isfinite(cross)
+    vv = valid & (co > 0)
+    vh = valid & (cross > 0)
+    extra = vh & (co == 0)
+    high = extra & np.isin(cross, [idx_cross[0], n_classes + 1])
+    expanded = extra & np.isin(cross, list(idx_cross[:2]) + [n_classes + 1])
+    counts = {
+        "non_ocean": int(np.count_nonzero(ocean == 0)),
+        "valid_pair": int(np.count_nonzero(valid)),
+        "invalid_pair_non_ocean": int(np.count_nonzero((ocean == 0) & ~valid)),
+        "vv": int(np.count_nonzero(vv)),
+        "vh": int(np.count_nonzero(vh)),
+        "both": int(np.count_nonzero(vv & vh)),
+        "extra": int(np.count_nonzero(extra)),
+        "high": int(np.count_nonzero(high)),
+        "expanded_high": int(np.count_nonzero(expanded)),
+    }
+    for label in range(1, n_classes + 2):
+        counts[f"class_{label}_extra"] = int(np.count_nonzero(extra & (cross == label)))
+        counts[f"class_{label}_both"] = int(np.count_nonzero(vv & (cross == label)))
+    for label in np.unique(lcc[extra & np.isfinite(lcc)]):
+        mask = extra & (lcc == label)
+        counts[f"lcc_{label:g}_extra"] = int(np.count_nonzero(mask))
+        counts[f"lcc_{label:g}_high"] = int(np.count_nonzero(mask & high))
+    counts["lcc_nonfinite_extra"] = int(np.count_nonzero(extra & ~np.isfinite(lcc)))
+    return counts
+
+
+def _print_vh_diagnostics(report):
+    counts = report["counts"]
+    def ratio(a, b):
+        return f"{a / b:.6f} ({100 * a / b:.3f}%)" if b else "N/A (zero denominator)"
+
+    print("\n========== VH ENABLE DIAGNOSTICS (not wind speed) ==========", flush=True)
+    print(f"Source VV: {report['vv_file']}\nSource VH: {report['vh_file']}")
+    print("Diagnostic counts use unique core pixels and finite VV/VH labels.")
+    for key in ("non_ocean", "valid_pair", "invalid_pair_non_ocean", "vv", "vh", "both", "extra", "high", "expanded_high"):
+        print(f"  {key:24s} = {counts[key]:,}")
+    for title, numerator, denominator in (
+        ("high / extra", "high", "extra"),
+        ("expanded_high / extra", "expanded_high", "extra"),
+        ("extra / valid_pair", "extra", "valid_pair"),
+        ("high / valid_pair", "high", "valid_pair"),
+        ("extra / VV detections", "extra", "vv"),
+        ("VV overlap / VH detections", "both", "vh"),
+    ):
+        print(f"  {title:30s} = {ratio(counts[numerator], counts[denominator])}")
+    print("VH classes in sigma2 ascending order: class, sigma2, extra, VV overlap, share of extra")
+    for label in report["class_order"] + [len(report["sigma2"]) + 1]:
+        sigma = report["sigma2"][label - 1] if label <= len(report["sigma2"]) else "extra class"
+        n = counts[f"class_{label}_extra"]
+        print(f"  {label}: sigma2={sigma}, extra={n:,}, both={counts[f'class_{label}_both']:,}, share={ratio(n, counts['extra'])}")
+    print("Land-cover distribution of VH-only detections (raw LCC codes; not ground truth):")
+    for key in sorted(k for k in counts if k.startswith("lcc_") and k.endswith("_extra")):
+        print(f"  {key}: {counts[key]:,}, share={ratio(counts[key], counts['extra'])}, high={counts.get(key.replace('_extra', '_high'), 'N/A')}")
+    print("==========================================================", flush=True)
 
 
 def patchBimodal(maskSeeds, I, thSizeBimodal, thPC, thAD, thRH, thDist2Mean):
@@ -173,6 +236,8 @@ def morph_pre_block_worker(
     thAD,
     thRH,
     thDist2Mean,
+    diagnostic_core_size,
+    lcc_block,
 ):
     """
     One morph_pre block.
@@ -201,6 +266,18 @@ def morph_pre_block_worker(
     targets_cross = [int(idx_cross[0]), int(nClasses_cross + 1)]
     VHDetectedHigh, VHDetected = countPixels(rasWBCo, rasWBCross, isOcean, targets_cross)
 
+    # Original decision counts above retain their overlapping-window semantics.
+    # Diagnostics count each pixel once using the processing core.
+    diagnostics = {}
+    if lcc_block is not None:
+        rs = iR * diagnostic_core_size - r0Load
+        cs = iC * diagnostic_core_size - c0Load
+        core = (slice(rs, rs + diagnostic_core_size), slice(cs, cs + diagnostic_core_size))
+        diagnostics = _vh_diagnostics(
+            rasWBCo[core], rasWBCross[core], isOcean[core],
+            np.asarray(lcc_block)[core], idx_cross, nClasses_cross,
+        )
+
     thBimodal, objID, th = patchBimodal(
         maskSeeds=maskSeeds,
         I=Ipp,
@@ -217,6 +294,7 @@ def morph_pre_block_worker(
         "thBimodal": np.asarray(thBimodal, dtype=float),
         "VHDetectedHigh": int(VHDetectedHigh),
         "VHDetected": int(VHDetected),
+        "diagnostics": diagnostics,
     }
 
 
@@ -282,6 +360,7 @@ def morph_pre_scene(scene_pack, blockSize=None):
                     ).reshape(-1)[0]
                 )
 
+
             scene_pack["morph_pre"] = {
                 "fileHiCredBimod": fileOut,
                 "thBimodal": thBimodal,
@@ -293,6 +372,8 @@ def morph_pre_scene(scene_pack, blockSize=None):
                 f"[morph_pre_scene] loaded checkpoint -> {fileOut}",
                 flush=True,
             )
+            if MORPH_DEBUG_VH:
+                print(f"[VH enable] cached isWindy={isWindy}; set resume_morph_pre=False to compute diagnostic logs.", flush=True)
             return scene_pack
 
         print(
@@ -376,6 +457,9 @@ def morph_pre_scene(scene_pack, blockSize=None):
                 thAD=thAD,
                 thRH=thRH,
                 thDist2Mean=thDist2Mean,
+                diagnostic_core_size=blockSize,
+                lcc_block=(ds_co.land_cover[rr0:rr0 + rrn, cc0:cc0 + ccn]
+                           if MORPH_DEBUG_VH else None),
             )
 
             tasks.append(task)
@@ -437,6 +521,26 @@ def morph_pre_scene(scene_pack, blockSize=None):
         f"detect_area<={windyDetectAreaMax:.2f}"
     )
     print(f"Windy case: {isWindy}")
+    if MORPH_DEBUG_VH:
+        print("[VH enable] Legacy decision statistics (overlapping read windows; unchanged):")
+        print(f"  Valid pixels (legacy non-ocean denominator) = {valid_pixels:,}")
+        print(f"  VHDetectedHigh={VHDetectedHigh:,}; VHDetected={VHDetected:,}")
+        print(f"  high_ratio={vh_high_ratio:.6f}; high_area_ratio={vh_high_area_ratio:.6f}; detect_area_ratio={vh_detect_area_ratio:.6f}")
+        print(f"  high_ratio >= {windyHighRatioMin}: {vh_high_ratio >= windyHighRatioMin}; "
+              f"high_ratio <= {windyHighRatioMax}: {vh_high_ratio <= windyHighRatioMax}; "
+              f"detect_area <= {windyDetectAreaMax}: {vh_detect_area_ratio <= windyDetectAreaMax}")
+        diagnostic_counts = {}
+        for res in results:
+            for key, value in res["diagnostics"].items():
+                diagnostic_counts[key] = diagnostic_counts.get(key, 0) + value
+        diagnostic_report = {
+            "counts": diagnostic_counts,
+            "class_order": idx_cross.tolist(),
+            "sigma2": Cqp.tolist(),
+            "vv_file": str(fileWB_co),
+            "vh_file": str(fileWB_cross),
+        }
+        _print_vh_diagnostics(diagnostic_report)
 
     # --------------------------------------------------
 
