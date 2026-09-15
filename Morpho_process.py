@@ -266,6 +266,12 @@ def morph_pre_block_worker(
     # [VHDetectedHigh, VHDetected] = countPixels(rasWBCo, rasWBCross, isOcean, [idx_qp(1), (nClasses_qp+1)])
     targets_cross = [int(idx_cross[0]), int(nClasses_cross + 1)]
     VHDetectedHigh, VHDetected = countPixels(rasWBCo, rasWBCross, isOcean, targets_cross)
+    # Include the second sigma2-ranked class for the activation lower bound.
+    targets_expanded = list(idx_cross[:2]) + [int(nClasses_cross + 1)]
+    VHDetectedExpandedHigh = int(np.count_nonzero(
+        (rasWBCo == 0) & (isOcean == 0)
+        & np.isin(rasWBCross, targets_expanded)
+    ))
 
     # Original decision counts above retain their overlapping-window semantics.
     # Diagnostics count each pixel once using the processing core.
@@ -294,6 +300,7 @@ def morph_pre_block_worker(
         "iC": int(iC),
         "thBimodal": np.asarray(thBimodal, dtype=float),
         "VHDetectedHigh": int(VHDetectedHigh),
+        "VHDetectedExpandedHigh": VHDetectedExpandedHigh,
         "VHDetected": int(VHDetected),
         "diagnostics": diagnostics,
     }
@@ -489,6 +496,7 @@ def morph_pre_scene(scene_pack, blockSize=None):
 
     thBimodal_all = []
     VHDetectedHigh = 0
+    VHDetectedExpandedHigh = 0
     VHDetected = 0
 
     for res in results:
@@ -497,6 +505,7 @@ def morph_pre_scene(scene_pack, blockSize=None):
             thBimodal_all.append(tb)
 
         VHDetectedHigh += int(res.get("VHDetectedHigh", 0))
+        VHDetectedExpandedHigh += int(res["VHDetectedExpandedHigh"])
         VHDetected += int(res.get("VHDetected", 0))
 
     if thBimodal_all:
@@ -529,24 +538,30 @@ def morph_pre_scene(scene_pack, blockSize=None):
     windyHighRatioMax = 0.43
     windyDetectAreaMax = 0.06
 
+    vh_expanded_high_ratio = (
+        VHDetectedExpandedHigh / VHDetected if VHDetected > 0 else 0.0
+    )
+
     isWindy = int(
-        (vh_high_ratio >= windyHighRatioMin)
+        (vh_expanded_high_ratio >= windyHighRatioMin)
         and (vh_high_ratio <= windyHighRatioMax)
         and (vh_detect_area_ratio <= windyDetectAreaMax)
     )
 
     print(
         f"Windy thresholds: "
-        f"high_ratio=[{windyHighRatioMin:.2f}, {windyHighRatioMax:.2f}], "
+        f"expanded_high_ratio>={windyHighRatioMin:.2f}, "
+        f"high_ratio<={windyHighRatioMax:.2f}, "
         f"detect_area<={windyDetectAreaMax:.2f}"
     )
     print(f"Windy case: {isWindy}")
     if MORPH_DEBUG_VH:
-        print("[VH enable] Legacy decision statistics (overlapping read windows; unchanged):")
+        print("[VH enable] Decision statistics (overlapping read windows):")
         print(f"  Valid pixels (legacy non-ocean denominator) = {valid_pixels:,}")
         print(f"  VHDetectedHigh={VHDetectedHigh:,}; VHDetected={VHDetected:,}")
+        print(f"  VHDetectedExpandedHigh={VHDetectedExpandedHigh:,}; expanded_high_ratio={vh_expanded_high_ratio:.6f}")
         print(f"  high_ratio={vh_high_ratio:.6f}; high_area_ratio={vh_high_area_ratio:.6f}; detect_area_ratio={vh_detect_area_ratio:.6f}")
-        print(f"  high_ratio >= {windyHighRatioMin}: {vh_high_ratio >= windyHighRatioMin}; "
+        print(f"  expanded_high_ratio >= {windyHighRatioMin}: {vh_expanded_high_ratio >= windyHighRatioMin}; "
               f"high_ratio <= {windyHighRatioMax}: {vh_high_ratio <= windyHighRatioMax}; "
               f"detect_area <= {windyDetectAreaMax}: {vh_detect_area_ratio <= windyDetectAreaMax}")
         diagnostic_counts = {}
