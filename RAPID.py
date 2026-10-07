@@ -14,6 +14,7 @@ import warnings
 import dask
 import tempfile
 import shutil
+import traceback
 from Quick_look import *
 
 warnings.filterwarnings("ignore")
@@ -867,6 +868,8 @@ def RAPID(*args, **kwargs):
 
     client = None
     cluster = None
+    scene_name = args.granules[0] if len(args.granules) == 1 else _infer_scene_name(filepath_list[0])
+    stage = "setup_dask"
     try:
         client = setup_dask_from_slurm(job_scratch)
 
@@ -876,6 +879,7 @@ def RAPID(*args, **kwargs):
     #   [vv, vh]  or  [url]
     # ----------------------------------
         args_list = []
+        stage = "scene_setup"
         for idx, filepath in enumerate(filepath_list):
             if len(filepath_list) == len(args.granules):
                 granuele_name = args.granules[idx]
@@ -898,17 +902,21 @@ def RAPID(*args, **kwargs):
     # scene-level dual-pol Binary
     # scene-level Morph
     # ----------------------------------
+        stage = "Load_Data"
         with Timer('Load_Data Total'):
             scene_loaded = dask.compute(*[dask.delayed(Load_Data)(arggs) for arggs in args_list])
 
+        stage = "Binary_classification"
         with Timer('TOTAL BC TIME'):
             scene_output = []
             for args_scene, ds_scene in scene_loaded:
                 scene_output.append(Binary_classification_dualpol(args_scene, ds_scene))
 
+        stage = "Morph_proc_scene"
         with Timer('Morph_proc_scene'):
             scene_output = [Morph_proc_scene(scene_pack) for scene_pack in scene_output]
 
+        stage = "Quicklook"
         with Timer('Quicklook'):
             for scene_pack in scene_output:
                 args_scene = scene_pack["scene_args"]
@@ -940,6 +948,24 @@ def RAPID(*args, **kwargs):
                     )
                 except Exception as e:
                     print(f"[Quicklook] failed for {args_scene.granules}: {e}", flush=True)
+    except Exception as exc:
+        # One scene per invocation: record failure and return normally so a
+        # caller processing multiple scenes can proceed to its next input.
+        failure = {
+            "time_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "scene": scene_name,
+            "inputs": filepath_list[0],
+            "stage": stage,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        print(f"[RAPID FAILED] {scene_name} at {stage}: {exc}", flush=True)
+        print(failure["traceback"], flush=True)
+        failure_log = os.path.join(args.WORK_PATH, "failed_scenes.jsonl")
+        with open(failure_log, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(failure, ensure_ascii=False) + "\n")
+        print(f"[RAPID] Failure recorded in {failure_log}; exiting normally.", flush=True)
     finally:
         try:
             if client is not None:
