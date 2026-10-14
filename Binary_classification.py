@@ -73,6 +73,7 @@ def select_water_tiles(args, ds):
     Required in args:
       args.thOccLim (low, high) e.g. (5,99)
       args.thMinSampleSize
+      args.initSampleMaxDb
       args.thIPrc
       args.thFrac
       args.binWidthInit
@@ -131,13 +132,14 @@ def select_water_tiles(args, ds):
                 continue
 
             I_dB = 10.0 * np.log10(I.astype(np.float64, copy=False))
+            seedMask = basinMask & (I_dB < float(args.initSampleMaxDb))
 
             thOcc[iR, iC] = th_high
             sample0 = None
             isSample0 = None
 
             while thOcc[iR, iC] > th_low:
-                isSample = basinMask & (water_prob >= thOcc[iR, iC])
+                isSample = seedMask & (water_prob >= thOcc[iR, iC])
 
                 if sample0 is None or sample0.size == 0:
                     if np.count_nonzero(isSample) > int(args.thMinSampleSize):
@@ -647,6 +649,7 @@ def findRange_bimodality(args, ds):
     args.thOccLim = getattr(args, "thOccLim", (5, 99))
     args.codePW = getattr(args, "codePW", 80)
     args.thMinSampleSize = getattr(args, "thMinSampleSize", 500)
+    args.initSampleMaxDb = getattr(args, "initSampleMaxDb", -9.0)
     args.thIPrc = getattr(args, "thIPrc", 50)
     args.thFrac = getattr(args, "thFrac", 1 - args.thIPrc / 100.0 + 0.1)
     args.binWidthInit = getattr(args, "binWidthInit", 0.2)
@@ -696,22 +699,28 @@ def findRange_bimodality(args, ds):
     ]
     use_cache = bool(getattr(args, "useSBACache", False))
 
+    cache_valid = False
     if use_cache and os.path.exists(args.fileSBAInit):
         with np.load(args.fileSBAInit, allow_pickle=False) as cached:
-            missing = [name for name in cache_fields if name not in cached]
-            if missing:
-                raise ValueError(
-                    f"Incomplete SBA cache {args.fileSBAInit}; missing: {missing}"
-                )
-            for name in cache_fields:
-                setattr(ds, name, np.asarray(cached[name]).squeeze())
-        print(f"loaded SBA cache: {args.fileSBAInit}", flush=True)
-    else:
+            cache_valid = (
+                "initSampleMaxDb" in cached
+                and np.isclose(float(cached["initSampleMaxDb"]), float(args.initSampleMaxDb))
+                and all(name in cached for name in cache_fields)
+            )
+            if cache_valid:
+                for name in cache_fields:
+                    setattr(ds, name, np.asarray(cached[name]).squeeze())
+        if cache_valid:
+            print(f"loaded SBA cache: {args.fileSBAInit}", flush=True)
+        else:
+            print(f"SBA cache is incompatible with the initialization threshold; rebuilding: {args.fileSBAInit}", flush=True)
+    if not cache_valid:
         args, ds = select_water_tiles(args, ds)
         if use_cache:
             os.makedirs(os.path.dirname(args.fileSBAInit) or ".", exist_ok=True)
             np.savez_compressed(
                 args.fileSBAInit,
+                initSampleMaxDb=np.asarray(args.initSampleMaxDb),
                 **{name: np.asarray(getattr(ds, name)) for name in cache_fields},
             )
             print(f"saved SBA cache: {args.fileSBAInit}", flush=True)
@@ -729,6 +738,7 @@ def createSampleMapSBA(
     r0, c0,      # per-window pixel offsets (0-based)
     nRows, nCols,# per-window sizes
     Iu,          # per-window Iu threshold in dB (NaN -> inf)
+    initSampleMaxDb: float = -9.0,
     showProg: bool = False,
     ref_raster_path: str | None = None,  # to fetch transform/crs/shape
     write_sample_map: bool = False,
@@ -820,7 +830,12 @@ def createSampleMapSBA(
             I_dB = np.full_like(I, np.nan, dtype=np.float64)
             I_dB[valid_I] = 10.0 * np.log10(I[valid_I])
 
-            isSample = (water_prob > float(thProb[w])) & valid_I & (I_dB < float(Iu[w]))
+            isSample = (
+                (water_prob > float(thProb[w]))
+                & valid_I
+                & (I_dB < float(Iu[w]))
+                & (I_dB < float(initSampleMaxDb))
+            )
 
             if np.any(isSample):
                 pol_list.append(I[isSample].astype(np.float64, copy=False))
@@ -1051,6 +1066,7 @@ def generate_initial_sample_maps(
             r0=r0Cat, c0=c0Cat,
             nRows=nRowsCat, nCols=nColsCat,
             Iu=IuCat,
+            initSampleMaxDb=args.initSampleMaxDb,
             showProg=showProg,
             ref_raster_path=args.filepath[0],
             write_sample_map=save_sample_map,

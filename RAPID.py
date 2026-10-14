@@ -70,7 +70,7 @@ def normalize_args(args):
             setattr(args, name, int(getattr(args, name)))
 
     float_fields = [
-        "thOccLow", "thOccHigh", "thFrac",
+        "thOccLow", "thOccHigh", "thFrac", "initSampleMaxDb",
         "maxENL", "thKLD", "thNSE", "thR2",
         "distThDist2Mean", "distThAD",
         "morphPreAD", "morphPreRH", "morphPreDist2Mean",
@@ -189,6 +189,8 @@ def parse(config_json=None):
                         help='Upper bound of water occurrence threshold (0-100). Default 99.')
     parser.add_argument('--thMinSampleSize', type=int, default=500,
                         help='Minimum number of seed pixels required to start sampling within a tile. Default 500.')
+    parser.add_argument('--initSampleMaxDb', type=float, default=-9.0,
+                        help='Maximum SAR backscatter in dB for VV/VH initialization samples (exclusive). Default -9 dB.')
     parser.add_argument('--thIPrc', type=float, default=50,
                         help='Percentile used as reference in the stopping test. Default 50.')
     parser.add_argument('--thFrac', type=float, default=0.6,
