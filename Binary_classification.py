@@ -1027,7 +1027,8 @@ def generate_initial_sample_maps(
       2) estimate mu/sigma in dB
       3) findInitDist -> sigma2, n_est, scores, thProb, binWidth
       4) KLD_chi2_frm_sample (optional figure)
-      5) remove invalid categories by thresholds; delete files
+      5) remove invalid categories by thresholds from the fitted distributions
+         and delete their sample files
     """
     print("generating the initial sample mask")
 
@@ -1111,6 +1112,10 @@ def generate_initial_sample_maps(
 
     # === remove categories with low statistics ===
     maskInvalidCat = (mKLD > thKLD) | (mNSE < thNSE) | (mR2 < thR2)
+    keepCat = ~maskInvalidCat
+
+    if not np.any(keepCat):
+        raise RuntimeError("No initial water distribution passed the category quality thresholds.")
 
     indRemove = np.where(maskInvalidCat)[0]  # 0-based indices
     for idx0 in indRemove:
@@ -1123,16 +1128,16 @@ def generate_initial_sample_maps(
             os.remove(fileSampleDist)
 
     return {
-        "pol_water_by_cat": pol_water_by_cat,
-        "sigma2": sigma2,
-        "n_est": n_est,
-        "binWidth": binWidth,
-        "mKLD": mKLD,
-        "mNSE": mNSE,
-        "mR2": mR2,
-        "thProb": thProb,
+        "pol_water_by_cat": [pol_water_by_cat[i] for i in np.flatnonzero(keepCat)],
+        "sigma2": sigma2[keepCat],
+        "n_est": n_est[keepCat],
+        "binWidth": binWidth[keepCat],
+        "mKLD": mKLD[keepCat],
+        "mNSE": mNSE[keepCat],
+        "mR2": mR2[keepCat],
+        "thProb": thProb[keepCat],
         "maskInvalidCat": maskInvalidCat,
-        "ucat": ucat,
+        "ucat": ucat[keepCat],
     }
 
 
