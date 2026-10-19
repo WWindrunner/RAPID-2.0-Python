@@ -1391,11 +1391,14 @@ def morph_block_worker(
     thpp_high_a = _read_th_window(thsrc_vv, int(idx_vv[0]))
     thpp_high_b = _read_th_window(thsrc_vv, int(nCatPP + 1))
     thpp_high = np.maximum(thpp_high_a, thpp_high_b).astype(np.float32, copy=False)
+    # For LCC permanent-water rescue, retain whichever threshold is available.
+    thpp_rescue = np.fmax(thpp_high_a, thpp_high_b).astype(np.float32, copy=False)
     del thpp_high_a, thpp_high_b
 
     thqp_high_a = _read_th_window(thsrc_vh, int(idx_vh[0]))
     thqp_high_b = _read_th_window(thsrc_vh, int(nCatQP + 1))
     thqp_high = np.maximum(thqp_high_a, thqp_high_b).astype(np.float32, copy=False)
+    thqp_rescue = np.fmax(thqp_high_a, thqp_high_b).astype(np.float32, copy=False)
     del thqp_high_a, thqp_high_b
 
     # Recover permanent-water seeds that were completely missed by the
@@ -1404,13 +1407,13 @@ def morph_block_worker(
     # the LCC water mask. ESA WorldCover class 80 is permanent water.
     valid_pp_rescue = (
         np.isfinite(Ipp)
-        & np.isfinite(thpp_high)
-        & (Ipp < thpp_high)
+        & np.isfinite(thpp_rescue)
+        & (Ipp < thpp_rescue)
     )
     valid_qp_rescue = (
         np.isfinite(Iqp)
-        & np.isfinite(thqp_high)
-        & (Iqp < thqp_high)
+        & np.isfinite(thqp_rescue)
+        & (Iqp < thqp_rescue)
     )
     maskPWRescue = (
         (LCC == 80)
@@ -1422,10 +1425,11 @@ def morph_block_worker(
     if np.any(maskPWRescue):
         rasWB[maskPWRescue] = 1
         maskPWHighCred |= maskPWRescue
-        thppM[maskPWRescue] = thpp_high[maskPWRescue]
-        thqpM[maskPWRescue] = thqp_high[maskPWRescue]
+        thppM[maskPWRescue] = thpp_rescue[maskPWRescue]
+        thqpM[maskPWRescue] = thqp_rescue[maskPWRescue]
 
     del valid_pp_rescue, valid_qp_rescue, maskPWRescue
+    del thpp_rescue, thqp_rescue
 
     # ---- moderate-threshold layer ----
     thpp_mod = None
@@ -1792,7 +1796,13 @@ def morph_block_worker(
         object_ids = np.arange(1, n_objects + 1, dtype=np.int32)
         area_counts = np.bincount(labels.ravel(), minlength=n_objects + 1).astype(float)
 
-        remove_small = area_counts[object_ids] < thSize_arr[credibility - 1]
+        # Class 1 is grown only inside the LCC permanent-water mask. Keep even
+        # one-pixel fragments when they survive the SAR and exclusion checks.
+        remove_small = (
+            np.zeros(object_ids.shape, dtype=bool)
+            if credibility == 1
+            else area_counts[object_ids] < thSize_arr[credibility - 1]
+        )
         compact_threshold = thCompactness_arr[credibility - 1]
         compact_scores = np.full(n_objects + 1, np.nan, dtype=float)
 
@@ -2037,7 +2047,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     nWBClasses = np.asarray(getattr(args_vv, "nWBClasses", [50]), dtype=int)
 
     rNWB = np.asarray(getattr(args_vv, "rNWB_morph", [0.3, 0.6, 0.5, 0.4, 0.4]), dtype=float)
-    thSize = np.asarray(getattr(args_vv, "thSize_morph", [10, 10, 10, 10, 50]), dtype=float)
+    thSize = np.asarray(getattr(args_vv, "thSize_morph", [0, 10, 10, 10, 50]), dtype=float)
     thCompactness = np.asarray(getattr(args_vv, "thCompactness", [0, 1.2, 1.6, 2.0, 2.4]), dtype=float)
 
     with rasterio.open(fileWB_vv) as src:

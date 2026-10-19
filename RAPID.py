@@ -319,8 +319,8 @@ def parse(config_json=None):
     parser.add_argument('--rNWB_WST', nargs='*', type=float, default=[0.3, 0.6, 0.5, 0.4, 0.4],
                         help='Maximum built-up fraction allowed for each credibility level in morphology. Default [0.3, 0.6, 0.5, 0.4, 0.4].')
 
-    parser.add_argument('--thSizeMorph', nargs='*', type=float, default=[10, 10, 10, 10, 50],
-                        help='Minimum object size for each credibility level in morphology. Default [10, 10, 10, 10, 50].')
+    parser.add_argument('--thSizeMorph', nargs='*', type=float, default=[0, 10, 10, 10, 50],
+                        help='Minimum object size for each credibility level in morphology. Permanent-water class 1 has no size limit; default [0, 10, 10, 10, 50].')
 
     parser.add_argument('--thCompMorph', nargs='*', type=float, default=[0, 1.2, 1.6, 2.0, 2.4],
                         help='Compactness thresholds for each credibility level in morphology. Default [0, 1.2, 1.6, 2.0, 2.4].')
