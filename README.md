@@ -260,6 +260,8 @@ overwritten or deleted.
 3. `Morph/Morph_final.tif`: Final result after the morphological process
 4. `quicklook.png` and `quicklook_map.png`: An overview of the final result with LCC map, Google Earth map, and the original SAR as reference.
 
+Optional snow and desert/beach revision of `Morph_final.tif` (S2 latest-clear snow mask, GFS/DEM snow gate, Sentinel-1 coherence for the desert mask): see [`Post_masks/README.md`](Post_masks/README.md).
+
 
 ## Reference
 1. Xinyi Shen, et al. (2019), Nearreal-time non-obstructed flood inundation mapping using synthetic aperture radar. Remote Sens. Environ., 221, 302–315, https://doi.org/10.1016/j.rse.2018.11.008.
