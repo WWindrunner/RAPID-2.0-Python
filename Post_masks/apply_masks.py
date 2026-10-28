@@ -8,7 +8,8 @@ Desert changes flood pixels (classes 2-5) only; snow changes non-ocean water pix
 
 Desert: like RAPID (Load_Data.py), desert raster > 0 (nearest onto the grid)
 AND ESA WorldCover class 60 (local tiles from --worldcover-dir or
-RAPID_WORLDCOVER_DIR, else the 2020 v100 download); "wc60" uses class 60 alone as a
+RAPID_WORLDCOVER_DIR, missing tiles from the 2021 v200 download; else the 2020 v100
+download); "wc60" uses class 60 alone as a
 stand-in,
 decided by S1 coherence alone (coh_loss.py output: baseline, event, loss):
     event > TH_LOW                  -> 0
@@ -42,6 +43,8 @@ OCEAN_URL = "https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_ocean.zip
 OCEAN_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "rapid", "ne_10m_ocean")
 WC_URL = ("/vsicurl/https://esa-worldcover.s3.eu-central-1.amazonaws.com/"
           "v100/2020/map/ESA_WorldCover_10m_2020_v100_{}_Map.tif")
+WC_URL_2021 = ("/vsicurl/https://esa-worldcover.s3.eu-central-1.amazonaws.com/"
+               "v200/2021/map/ESA_WorldCover_10m_2021_v200_{}_Map.tif")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("morph")
@@ -104,12 +107,16 @@ def worldcover60():
              for lon in range(int(np.floor(w / 3) * 3), int(np.ceil(e / 3) * 3), 3)]
     if args.worldcover_dir:
         import glob
-        paths = [sorted(glob.glob(os.path.join(args.worldcover_dir,
-                                               f"ESA_WorldCover_10m_*_{t}_Map.tif")))
-                 for t in tiles]
-        paths = [found[-1] for found in paths if found]
+        paths = []
+        for t in tiles:
+            found = sorted(glob.glob(os.path.join(args.worldcover_dir,
+                                                  f"ESA_WorldCover_10m_*_{t}_Map.tif")))
+            # not local: same 2021 v200 tile from ESA
+            paths.append(found[-1] if found else WC_URL_2021.format(t))
     else:
         paths = [WC_URL.format(t) for t in tiles]
+    # open ocean has no tile at all
+    paths = [p for p in paths if gdal.VSIStatL(p) is not None]
     print("WorldCover tiles:", paths)
     ds = gdal.Warp("", paths, format="MEM", dstSRS=crs_wkt,
                    outputBounds=(w, s, e, n), width=cols, height=rows,

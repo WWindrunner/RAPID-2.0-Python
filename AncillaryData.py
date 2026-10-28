@@ -7,7 +7,7 @@ from rasterio.warp import reproject, Resampling, transform_bounds, calculate_def
 import dask
 import dask.array as da
 from dask import delayed, compute
-from osgeo import ogr
+from osgeo import gdal, ogr
 from rasterio.transform import Affine
 import tempfile
 
@@ -138,6 +138,15 @@ class AncillaryData:
                     if found:
                         print(found[-1])
                         elements.append(found[-1])
+                        continue
+                    # not local: same 2021 v200 tile from ESA; open ocean has no tile at all
+                    url = ("https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/"
+                           f"ESA_WorldCover_10m_2021_v200_{tile}_Map.tif")
+                    if gdal.VSIStatL("/vsicurl/" + url) is not None:
+                        print(url)
+                        elements.append(url)
+                    else:
+                        print(f"WorldCover {tile}: no local or remote tile (ocean)")
             if not elements:
                 raise FileNotFoundError(f"no WorldCover tiles in {local_dir} for {Hcrop_Ex}")
             return self.merge_res(elements)
