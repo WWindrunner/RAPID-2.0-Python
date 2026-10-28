@@ -102,6 +102,10 @@ class AncillaryData:
                 for lat in lats:
                     filename = file_tmpl.format(ds=ds_name, lon=lon, lat=lat)
                     url = url_tmpl.format(ds=ds_name, file=filename)
+                    # RAPID_GSW_DIR: local copy of the occurrence tiles
+                    local = os.path.join(os.environ.get("RAPID_GSW_DIR", ""), filename)
+                    if os.environ.get("RAPID_GSW_DIR") and os.path.exists(local):
+                        url = local
                     print(url)
                     elements.append(url)
         merged_resandclip = self.merge_res(elements)
@@ -122,6 +126,22 @@ class AncillaryData:
         """
         Get the intersect copernicus glo30 data file list based on bounds and offical geojson
         """
+        # RAPID_WORLDCOVER_DIR: local ESA_WorldCover_10m_*_<tile>_Map.tif on the 3-degree grid
+        local_dir = os.environ.get("RAPID_WORLDCOVER_DIR")
+        if local_dir:
+            import glob
+            elements = []
+            for lat in range(int(np.floor(Hcrop_Ex[1] / 3) * 3), int(np.ceil(Hcrop_Ex[3] / 3) * 3), 3):
+                for lon in range(int(np.floor(Hcrop_Ex[0] / 3) * 3), int(np.ceil(Hcrop_Ex[2] / 3) * 3), 3):
+                    tile = f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}{'E' if lon >= 0 else 'W'}{abs(lon):03d}"
+                    found = sorted(glob.glob(os.path.join(local_dir, f"ESA_WorldCover_10m_*_{tile}_Map.tif")))
+                    if found:
+                        print(found[-1])
+                        elements.append(found[-1])
+            if not elements:
+                raise FileNotFoundError(f"no WorldCover tiles in {local_dir} for {Hcrop_Ex}")
+            return self.merge_res(elements)
+
         s3_url_prefix = "https://esa-worldcover.s3.eu-central-1.amazonaws.com"
         # Open the geojson file
         DEM_GEOJSON = f'{s3_url_prefix}/v100/2020/esa_worldcover_2020_grid.geojson'
@@ -182,16 +202,21 @@ class AncillaryData:
         tmpdir = tmpdir_obj.name
         zip_path = os.path.join(tmpdir, "ne_10m_ocean.zip")
 
-        print(url)
-        urllib.request.urlretrieve(url, zip_path)
+        # RAPID_OCEAN_SHP: local ocean polygons instead of the download
+        shp_path = os.environ.get("RAPID_OCEAN_SHP")
+        if shp_path:
+            print(shp_path)
+        else:
+            print(url)
+            urllib.request.urlretrieve(url, zip_path)
 
-        # --------------------------------------------------
-        # 2. Unzip
-        # --------------------------------------------------
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(tmpdir)
+            # --------------------------------------------------
+            # 2. Unzip
+            # --------------------------------------------------
+            with zipfile.ZipFile(zip_path, "r") as z:
+                z.extractall(tmpdir)
 
-        shp_path = os.path.join(tmpdir, "ne_10m_ocean.shp")
+            shp_path = os.path.join(tmpdir, "ne_10m_ocean.shp")
         if not os.path.exists(shp_path):
             raise FileNotFoundError("ne_10m_ocean.shp not found after unzip")
 
