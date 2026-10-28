@@ -48,35 +48,23 @@ Skip coherence when the scene has no desert-mask ∩ flood pixels.
 
 Ocean (Natural Earth 10m polygons, rasterized on the RAPID grid) is never changed.
 
-## Scripts
+## Inputs and script
 
-| Script | Environment | Purpose |
-|---|---|---|
-| `snow_possible.py` | `s1pro` + xarray, zarr≥3, gcsfs | 1 = snow possible: 30-day minimum 2 m temperature (NOAA GFS 0.25° TMIN, a few hours latency; ERA5 for windows before 2021), lapse-rate (6.5 K/km) downscaled to Copernicus DEM GLO-90, ≤ 5 °C. Prints `SNOW_POSSIBLE` / `SNOW_IMPOSSIBLE`. |
-| `snow_latest_clear.py` | `s1pro` | S2 snow mask from the latest clear SCL view in the 15-day window (values above). Only needed when snow is possible. |
-| `find_bursts.py` | asf_search | SLC bursts of the GRD scene and their two previous acquisitions. |
-| `hyp3_coh.py` | hyp3_sdk | Submit / fetch ASF HyP3 `INSAR_ISCE_BURST` jobs (looks 5x1, 1 credit per pair) for event and baseline pairs. |
-| `coh_loss.py` | `s1pro` | Mosaic burst coherence onto the RAPID grid: band 1 baseline, 2 event, 3 loss. |
-| `apply_masks.py` | `s1pro` | Apply the rules above. |
+The input masks are made by scripts in
+[S1_download](https://github.com/WWindrunner/S1_download) (branch `snow-desert-masks`):
+`snow_possible.py` (`<S1>_snow_possible.tif`), `snow_latest_clear.py` (`<S1>_ice.tif`,
+only when snow is possible) and `find_bursts.py` / `hyp3_coh.py` / `coh_loss.py`
+(`<S1>_coh.tif`, only when the desert mask overlaps flood).
 
-## Example
+`apply_masks.py` (`s1pro` environment) applies the rules above:
 
 ```bash
 S=S1A_IW_GRDH_1SDV_20251227T200851_20251227T200916_062505_07D522_C3E7
 REF=$S/Morph/Morph_final.tif
-
-# Snow: physical gate first, the S2 mask only if needed
-python snow_possible.py $S $REF ${S}_snow_possible.tif | tail -1     # SNOW_IMPOSSIBLE
-# python snow_latest_clear.py $S $REF ${S}_ice.tif
-
-# Desert: coherence only if desert mask ∩ flood is not empty
-python find_bursts.py $S bursts.json
-python hyp3_coh.py submit bursts.json coh_$S      # later: fetch
-python coh_loss.py coh_$S $REF $S                 # -> ${S}_coh.tif
-
 python apply_masks.py $REF $S --desert $DESERT_MASK_VRT --coh ${S}_coh.tif \
     --snow-possible ${S}_snow_possible.tif        # add --snow ${S}_ice.tif when possible
 ```
 
-`--desert wc60` uses WorldCover class 60 alone when the desert raster is unavailable.
-HyP3 needs NASA Earthdata credentials (`~/.netrc`).
+WorldCover is read from `--worldcover-dir` or `RAPID_WORLDCOVER_DIR` when set (as
+`AncillaryData.py`), else downloaded. `--desert wc60` uses WorldCover class 60 alone
+when the desert raster is unavailable.

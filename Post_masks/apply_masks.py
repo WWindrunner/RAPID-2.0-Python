@@ -7,7 +7,9 @@ Desert changes flood pixels (classes 2-5) only; snow changes non-ocean water pix
 (permanent water 1 and flood 2-5). The LIA/shadow exclusion is untouched.
 
 Desert: like RAPID (Load_Data.py), desert raster > 0 (nearest onto the grid)
-AND ESA WorldCover 2020 class 60; "wc60" uses class 60 alone as a stand-in,
+AND ESA WorldCover class 60 (local tiles from --worldcover-dir or
+RAPID_WORLDCOVER_DIR, else the 2020 v100 download); "wc60" uses class 60 alone as a
+stand-in,
 decided by S1 coherence alone (coh_loss.py output: baseline, event, loss):
     event > TH_LOW                  -> 0
     event <= TH_LOW, loss >= TH_D   -> flood class kept
@@ -50,6 +52,9 @@ parser.add_argument("--snow")
 parser.add_argument("--ocean", help="ocean polygons; default Natural Earth 10m, "
                     "downloaded once to ~/.cache/rapid")
 parser.add_argument("--snow-possible")
+parser.add_argument("--worldcover-dir", default=os.environ.get("RAPID_WORLDCOVER_DIR"),
+                    help="local ESA_WorldCover_10m_*_<tile>_Map.tif (default "
+                         "RAPID_WORLDCOVER_DIR, as AncillaryData.py); else downloaded")
 args = parser.parse_args()
 assert args.desert or args.snow or args.snow_possible, "give --desert and/or --snow"
 assert not args.desert or args.coh, "--desert needs --coh"
@@ -97,8 +102,16 @@ def worldcover60():
     tiles = [f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}{'E' if lon >= 0 else 'W'}{abs(lon):03d}"
              for lat in range(int(np.floor(s / 3) * 3), int(np.ceil(n / 3) * 3), 3)
              for lon in range(int(np.floor(w / 3) * 3), int(np.ceil(e / 3) * 3), 3)]
-    print("WorldCover tiles:", tiles)
-    ds = gdal.Warp("", [WC_URL.format(t) for t in tiles], format="MEM", dstSRS=crs_wkt,
+    if args.worldcover_dir:
+        import glob
+        paths = [sorted(glob.glob(os.path.join(args.worldcover_dir,
+                                               f"ESA_WorldCover_10m_*_{t}_Map.tif")))
+                 for t in tiles]
+        paths = [found[-1] for found in paths if found]
+    else:
+        paths = [WC_URL.format(t) for t in tiles]
+    print("WorldCover tiles:", paths)
+    ds = gdal.Warp("", paths, format="MEM", dstSRS=crs_wkt,
                    outputBounds=(w, s, e, n), width=cols, height=rows,
                    resampleAlg="mode", srcNodata=0, dstNodata=0, multithread=True)
     return ds.ReadAsArray() == 60
