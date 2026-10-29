@@ -111,7 +111,15 @@ def normalize_args(args):
                 else:
                     setattr(args, name, [float(x) for x in val])
 
-    # -------- derived fields --------
+    return derive_args(args)
+
+
+def derive_args(args):
+    """
+    Recompute fields derived from user-facing arguments. Called after config
+    normalization and again after command-line overrides, so overriding a
+    source field (e.g. blockSizeMorph) also updates its derived alias.
+    """
     if hasattr(args, "thOccLow") and hasattr(args, "thOccHigh"):
         args.thOccLim = (float(args.thOccLow), float(args.thOccHigh))
 
@@ -268,7 +276,7 @@ def parse(config_json=None):
     # -----------------------------
     # morph thresholds
     # -----------------------------
-    parser.add_argument('--resume_morph', type=_str2bool, default=False,
+    parser.add_argument('--resume_morph', type=_str2bool, default=True,
                         help='If True, skip binary classification when Cat_init and ThFine outputs already exist, and run morph directly.')
 
     parser.add_argument(
@@ -278,8 +286,8 @@ def parse(config_json=None):
         help='If True, load the morph_pre NPZ checkpoint when available and continue with final morph blocks.',
     )
 
-    parser.add_argument('--morphPreBlockSize', type=int, default=1000,
-                        help='Block size for morph_pre. Default 1000.')
+    parser.add_argument('--morphPreBlockSize', type=int, default=3000,
+                        help='Block size for morph_pre and final morphology; alias of blockSizeMorph. Default 3000.')
 
     parser.add_argument('--morphPrePatchSize', type=int, default=500,
                         help='Minimum patch size for patchBimodal. Default 500.')
@@ -332,8 +340,8 @@ def parse(config_json=None):
     parser.add_argument('--rProb', type=float, default=0.5,
                         help='Minimum ratio of high-probability pixels to total area. Default 0.5.')
 
-    parser.add_argument('--blockSizeMorph', type=int, default=1000,
-                        help='Block size for morphology stage. Default 1000.')
+    parser.add_argument('--blockSizeMorph', type=int, default=3000,
+                        help='Block size for morph_pre and final morphology. Default 3000.')
 
     # -----------------------------
     # LIA exclusion parameters
@@ -371,6 +379,9 @@ def parse(config_json=None):
 
         for k, v in loaded_args.items():
             setattr(args, k, v)
+        # morphPreBlockSize is an alias; keep its source field in sync.
+        if "morphPreBlockSize" in loaded_args and "blockSizeMorph" not in loaded_args:
+            args.blockSizeMorph = loaded_args["morphPreBlockSize"]
 
     # ---- normalize once ----
     args = normalize_args(args)
@@ -833,7 +844,12 @@ def RAPID(*args, **kwargs):
                         val = [val]
 
                 setattr(args, key, val)
+                # morphPreBlockSize is an alias; keep its source field in sync.
+                if key == "morphPreBlockSize":
+                    args.blockSizeMorph = val
                 i += 2
+
+        args = derive_args(args)
 
     elif len(args) == 1:
         # config / geojson style input

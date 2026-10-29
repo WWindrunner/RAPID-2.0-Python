@@ -332,7 +332,7 @@ def morph_pre_scene(scene_pack, blockSize=None):
     args_cross, ds_cross = pol_results["VH"]
 
     if blockSize is None:
-        blockSize = int(getattr(args_co, "morphPreBlockSize", 1000))
+        blockSize = int(getattr(args_co, "morphPreBlockSize", 3000))
 
     dirMorph = getattr(args_co, "dirMorph", os.path.join(args_co.dirOut, "Morph"))
     os.makedirs(dirMorph, exist_ok=True)
@@ -483,8 +483,7 @@ def morph_pre_scene(scene_pack, blockSize=None):
                 thRH=thRH,
                 thDist2Mean=thDist2Mean,
                 diagnostic_core_size=blockSize,
-                lcc_block=(ds_co.land_cover[rr0:rr0 + rrn, cc0:cc0 + ccn]
-                           if MORPH_DEBUG_VH else None),
+                lcc_block=ds_co.land_cover[rr0:rr0 + rrn, cc0:cc0 + ccn],
             )
 
             tasks.append(task)
@@ -537,23 +536,46 @@ def morph_pre_scene(scene_pack, blockSize=None):
     windyHighRatioMin = 0.15
     windyHighRatioMax = 0.43
     windyDetectAreaMax = 0.06
+    # Vegetation veto: confident VH-only detections concentrated on
+    # grassland/cropland (ESA LCC 30/40) indicate VH volume-scattering false
+    # alarms rather than wind-roughened water.
+    windyVegHighRatioMax = 0.25
+    windyVegShareMax = 0.42
+    vegLCCClasses = (30, 40)
 
     vh_expanded_high_ratio = (
         VHDetectedExpandedHigh / VHDetected if VHDetected > 0 else 0.0
     )
 
-    isWindy = int(
+    # Unique-core counts of VH-only pixels (no overlapping-window double counting).
+    diagnostic_counts = {}
+    for res in results:
+        for key, value in res["diagnostics"].items():
+            diagnostic_counts[key] = diagnostic_counts.get(key, 0) + value
+    vh_extra = diagnostic_counts.get("extra", 0)
+    vh_extra_veg = sum(diagnostic_counts.get(f"lcc_{c}_extra", 0) for c in vegLCCClasses)
+    vh_veg_share = vh_extra_veg / vh_extra if vh_extra > 0 else 0.0
+    isVegFalseAlarm = (
+        (vh_high_ratio >= windyVegHighRatioMax)
+        and (vh_veg_share >= windyVegShareMax)
+    )
+
+    isWindyLegacy = int(
         (vh_expanded_high_ratio >= windyHighRatioMin)
         and (vh_high_ratio <= windyHighRatioMax)
         and (vh_detect_area_ratio <= windyDetectAreaMax)
     )
+    isWindy = int(isWindyLegacy and not isVegFalseAlarm)
 
     print(
         f"Windy thresholds: "
         f"expanded_high_ratio>={windyHighRatioMin:.2f}, "
         f"high_ratio<={windyHighRatioMax:.2f}, "
-        f"detect_area<={windyDetectAreaMax:.2f}"
+        f"detect_area<={windyDetectAreaMax:.2f}, "
+        f"veto if high_ratio>={windyVegHighRatioMax:.2f} and veg_share>={windyVegShareMax:.2f}"
     )
+    print(f"  high_ratio={vh_high_ratio:.4f}, veg_share(LCC{vegLCCClasses})={vh_veg_share:.4f}, "
+          f"veg veto={isVegFalseAlarm}, legacy windy={isWindyLegacy}")
     print(f"Windy case: {isWindy}")
     if MORPH_DEBUG_VH:
         print("[VH enable] Decision statistics (overlapping read windows):")
@@ -564,10 +586,6 @@ def morph_pre_scene(scene_pack, blockSize=None):
         print(f"  expanded_high_ratio >= {windyHighRatioMin}: {vh_expanded_high_ratio >= windyHighRatioMin}; "
               f"high_ratio <= {windyHighRatioMax}: {vh_high_ratio <= windyHighRatioMax}; "
               f"detect_area <= {windyDetectAreaMax}: {vh_detect_area_ratio <= windyDetectAreaMax}")
-        diagnostic_counts = {}
-        for res in results:
-            for key, value in res["diagnostics"].items():
-                diagnostic_counts[key] = diagnostic_counts.get(key, 0) + value
         diagnostic_report = {
             "counts": diagnostic_counts,
             "class_order": idx_cross.tolist(),
@@ -1489,11 +1507,11 @@ def morph_block_worker(
         #else:
         #    accept = (Ipp < thPWppBlock)
 
-        vv_strong = (
-            (rasWBCo == idx_vv[0]) |
-            ((len(idx_vv) >= 2) & (rasWBCo == idx_vv[1])) |
-            ((len(idx_vv) >= 2) & (rasWBCo == (nCatPP + 1)))
-        )
+        # "&" does not short-circuit, so guard idx_vv[1] explicitly for
+        # scenes with a single VV category.
+        vv_strong = (rasWBCo == idx_vv[0])
+        if len(idx_vv) >= 2:
+            vv_strong |= (rasWBCo == idx_vv[1]) | (rasWBCo == (nCatPP + 1))
 
         vh_strong = (
             (rasWBCross == idx_vh[0]) |
@@ -1991,7 +2009,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     isWindy = int(morph_pre.get("isWindy", 0))
 
     if blockSize is None:
-        blockSize = int(getattr(args_vv, "morphPreBlockSize", 1000))
+        blockSize = int(getattr(args_vv, "morphPreBlockSize", 3000))
 
     if batch_size is None:
         batch_size = int(getattr(args_vv, "morphBatchSize", 100))
