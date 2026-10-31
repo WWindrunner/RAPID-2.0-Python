@@ -56,6 +56,12 @@ The input masks are made by scripts in
 only when snow is possible) and `find_bursts.py` / `hyp3_coh.py` / `coh_loss.py`
 (`<S1>_coh.tif`, only when the desert mask overlaps flood).
 
+The snow step has a real-time and a research product. Within about a week of the S1
+time `snow_possible.py` uses GFS (prints `PRODUCT realtime <date>`); run it again from
+that date on and it switches to ERA5, whose lake model has ice on more lakes (prints
+`PRODUCT research`). Then rerun `snow_latest_clear.py` if it was skipped and the scene
+is now `SNOW_POSSIBLE`, and `apply_masks.py`. RAPID itself is not rerun.
+
 `apply_masks.py` (`s1pro` environment) applies the rules above:
 
 ```bash
