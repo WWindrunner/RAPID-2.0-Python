@@ -48,6 +48,16 @@ Skip coherence when the scene has no desert-mask ∩ flood pixels.
 
 Ocean (Natural Earth 10m polygons, rasterized on the RAPID grid) is never changed.
 
+## Testing status
+
+The snow / ice and desert masks in their current form are tested on two scenes only,
+checked against Planet imagery:
+`S1A_IW_GRDH_1SDV_20220501T001528_20220501T001603_043010_05229E_121A` (Red River,
+frozen lakes next to a valid flood) and
+`S1A_IW_GRDH_1SDV_20260107T141552_20260107T141617_062662_07DB2A_B7B0` (California,
+desert mask; no snow or ice on water). More snow cases need to be tested before
+operational use.
+
 ## Inputs and script
 
 The input masks are made by scripts in
