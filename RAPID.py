@@ -353,6 +353,20 @@ def parse(config_json=None):
     parser.add_argument('--desert_mask_path', type=str, default=None,
                         help='Optional precomputed dark area raster path (binary, 1 for dark area).')
 
+    parser.add_argument('--coh_path', type=str, default=None,
+                        help='Optional InSAR coherence raster, e.g. the 3-band output of S1_download/coh_loss.py '
+                             '(1 baseline, 2 event, 3 loss); warped to the Cat_init grid. Initial-water objects '
+                             '(Cat_init VV or VH > 0, 8-connected) whose median event coherence is below '
+                             '--thCohSkip skip the morphological rules (seed categories, growth thresholds, '
+                             'low-credible cap, size and compactness) and are kept as at least class 5. The ice, '
+                             'desert and LIA masks and the built-up rule still apply.')
+
+    parser.add_argument('--coh_band', type=int, default=2,
+                        help='Band of --coh_path holding the event coherence. Default 2 (coh_loss.py output).')
+
+    parser.add_argument('--thCohSkip', type=float, default=0.5,
+                        help='Object median event coherence below which the morphological rules are skipped. Default 0.5.')
+
     parser.add_argument('--LIA_th', type=float, default=50.0,
                         help='Deprecated compatibility option; binary LIA masks are thresholded during preprocessing.')
 

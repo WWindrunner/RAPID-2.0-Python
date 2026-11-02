@@ -1166,6 +1166,7 @@ def morph_block_worker(
     block_transform,
     crs,
     debug_save=False,
+    lowcoh_path=None,
 ):
     import os
     import gc
@@ -1247,6 +1248,15 @@ def morph_block_worker(
     LCC = np.asarray(LCC)
     water_occ = np.asarray(water_occ, dtype=np.float32)
     valid_sar = np.isfinite(Ipp) & np.isfinite(Iqp)
+
+    # Low-coherence initial-water objects (build_lowcoh_objects, --coh_path): they skip
+    # the morphological rules (seed categories, growth thresholds, low-credible cap,
+    # size and compactness) but not the ice / desert / LIA masks or the built-up rule.
+    if lowcoh_path:
+        lowcoh = _read_window_from_tif(lowcoh_path, r0Load, c0Load, nRowsLoad, nColsLoad)
+        lowcoh = np.nan_to_num(np.asarray(lowcoh, dtype=np.float32), nan=0.0) > 0
+    else:
+        lowcoh = None
 
     rows, cols = rasWBCo.shape
     rasWB = np.zeros((rows, cols), dtype=np.float32)
@@ -1589,6 +1599,10 @@ def morph_block_worker(
         if np.isfinite(cap_val):
             rasWB[maskLow] = 5 * (Ipp[maskLow] < np.float32(cap_val)).astype(np.float32)
 
+    # low-coherence initial water removed by the seed / threshold / cap rules -> class 5
+    if lowcoh is not None:
+        rasWB[lowcoh & (rasWB == 0) & (~maskOut)] = 5
+
     _save_debug(rasWB, "04_before_cleanup")
 
     # ---- ice/snow pixel-level exclusion ----
@@ -1829,8 +1843,12 @@ def morph_block_worker(
         if remove_ids.size > 0:
             remove_lut = np.zeros(n_objects + 1, dtype=bool)
             remove_lut[remove_ids] = True
-            rasWB[remove_lut[labels]] = 0
-            del remove_lut
+            remove_px = remove_lut[labels]
+            if lowcoh is not None:
+                # low-coherence pixels are exempt from size / compactness removal
+                remove_px &= ~lowcoh
+            rasWB[remove_px] = 0
+            del remove_lut, remove_px
 
         if DEBUG_SAVE:
             finite_scores = compact_scores[object_ids]
@@ -1904,6 +1922,67 @@ def morph_block_worker(
         "iC": iC,
         "file": block_file
     }
+
+
+def build_lowcoh_objects(fileWB_vv, fileWB_vh, coh_path, coh_band, th, out_path):
+    """Scene-wide low-coherence initial-water objects.
+
+    Initial water = Cat_init VV or VH category > 0 (255 = nodata), 8-connected over the
+    whole scene. An object is low-coherence when the median of its finite event-coherence
+    values is below th. Writes uint8 out_path (1 = pixel of a low-coherence object) on the
+    Cat_init grid and returns it. Objects without coherence are not low-coherence.
+    """
+    from rasterio.warp import reproject, Resampling
+
+    with rasterio.open(fileWB_vv) as sv, rasterio.open(fileWB_vh) as sh:
+        a = sv.read(1)
+        b = sh.read(1)
+        profile = sv.profile.copy()
+        shape, transform, crs = sv.shape, sv.transform, sv.crs
+    init = ((a > 0) & (a != 255)) | ((b > 0) & (b != 255))
+    del a, b
+
+    with rasterio.open(coh_path) as sc:
+        if sc.shape == shape and sc.transform.almost_equals(transform) and sc.crs == crs:
+            coh = sc.read(int(coh_band)).astype(np.float32)
+            if sc.nodata is not None and np.isfinite(sc.nodata):
+                coh[coh == sc.nodata] = np.nan
+        else:
+            coh = np.full(shape, np.nan, dtype=np.float32)
+            reproject(
+                source=rasterio.band(sc, int(coh_band)),
+                destination=coh,
+                dst_transform=transform,
+                dst_crs=crs,
+                dst_nodata=np.nan,
+                resampling=Resampling.bilinear,
+            )
+
+    labels, n = ndimage.label(init, structure=np.ones((3, 3), dtype=bool))
+    low = np.zeros(n + 1, dtype=bool)
+    if n > 0:
+        valid = (labels > 0) & np.isfinite(coh)
+        lab_v = labels[valid]
+        coh_v = coh[valid]
+        order = np.lexsort((coh_v, lab_v))
+        lab_v, coh_v = lab_v[order], coh_v[order]
+        ids, start, count = np.unique(lab_v, return_index=True, return_counts=True)
+        # median of the sorted values of each object
+        lo = start + (count - 1) // 2
+        hi = start + count // 2
+        median = 0.5 * (coh_v[lo] + coh_v[hi])
+        low[ids] = median < float(th)
+        del valid, lab_v, coh_v, order
+    out = low[labels].astype(np.uint8)
+
+    profile.update(driver="GTiff", dtype="uint8", count=1, nodata=None,
+                   compress="deflate", tiled=True, blockxsize=256, blockysize=256)
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(out, 1)
+        dst.set_band_description(1, f"initial-water object median event coherence < {th}")
+    print(f"[lowcoh] {n} initial-water objects, {int(low.sum())} with median event coherence < {th}; "
+          f"{int(out.sum())} of {int(init.sum())} initial-water px -> {out_path}", flush=True)
+    return out_path
 
 
 def _write_morph_block_index(
@@ -2007,6 +2086,16 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
 
     fileThFine_vv = getattr(args_vv, "fileThFine", os.path.join(args_vv.dirTempPol, "ThFine.tif"))
     fileThFine_vh = getattr(args_vh, "fileThFine", os.path.join(args_vh.dirTempPol, "ThFine.tif"))
+
+    lowcoh_path = None
+    coh_path = getattr(args_vv, "coh_path", None)
+    if coh_path:
+        lowcoh_path = build_lowcoh_objects(
+            fileWB_vv, fileWB_vh, coh_path,
+            coh_band=int(getattr(args_vv, "coh_band", 2)),
+            th=float(getattr(args_vv, "thCohSkip", 0.5)),
+            out_path=os.path.join(dirMorph, "lowcoh_objects.tif"),
+        )
 
     Cpp = np.asarray(ds_vv.sigma2, dtype=float).reshape(-1)
     Cqp = np.asarray(ds_vh.sigma2, dtype=float).reshape(-1)
@@ -2242,6 +2331,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
                     block_transform=ref_transform,
                     crs=ref_crs,
                     debug_save=(iR, iC) in requested_debug_blocks,
+                    lowcoh_path=lowcoh_path,
                 )
             )
 
