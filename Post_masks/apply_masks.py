@@ -21,8 +21,9 @@ water and to flood pixels the desert step did not set to 0:
     6-15  -> 100 + age  (106-115, less credible)
     200   -> 250        (every S2 view in the window was cloud / cloud shadow)
 Ocean (Natural Earth 10m, as in RAPID's getOceanMask) is not water here: the snow
-step never touches it. With --snow-possible (snow_possible.py output, ERA5 + DEM),
-snow labels go only where snow is physically possible; a scene where it is possible
+step never touches it. With --snow-possible (snow_possible.py output: 2 m
+temperature on the DEM, model snow depth and lake / sea ice at the S1 time),
+snow labels go only where snow or ice is physically possible; a scene where it is possible
 nowhere needs no S2 snow mask at all (--snow may then be left out).
 """
 import argparse

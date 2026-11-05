@@ -48,6 +48,16 @@ Skip coherence when the scene has no desert-mask ∩ flood pixels.
 
 Ocean (Natural Earth 10m polygons, rasterized on the RAPID grid) is never changed.
 
+## Testing status
+
+The snow / ice and desert masks in their current form are tested on two scenes only,
+checked against Planet imagery:
+`S1A_IW_GRDH_1SDV_20220501T001528_20220501T001603_043010_05229E_121A` (Red River,
+frozen lakes next to a valid flood) and
+`S1A_IW_GRDH_1SDV_20260107T141552_20260107T141617_062662_07DB2A_B7B0` (California,
+desert mask; no snow or ice on water). More snow cases need to be tested before
+operational use.
+
 ## Inputs and script
 
 The input masks are made by scripts in
@@ -55,6 +65,12 @@ The input masks are made by scripts in
 `snow_possible.py` (`<S1>_snow_possible.tif`), `snow_latest_clear.py` (`<S1>_ice.tif`,
 only when snow is possible) and `find_bursts.py` / `hyp3_coh.py` / `coh_loss.py`
 (`<S1>_coh.tif`, only when the desert mask overlaps flood).
+
+The snow step has a real-time and a research product. Within about a week of the S1
+time `snow_possible.py` uses GFS (prints `PRODUCT realtime <date>`); run it again from
+that date on and it switches to ERA5, whose lake model has ice on more lakes (prints
+`PRODUCT research`). Then rerun `snow_latest_clear.py` if it was skipped and the scene
+is now `SNOW_POSSIBLE`, and `apply_masks.py`. RAPID itself is not rerun.
 
 `apply_masks.py` (`s1pro` environment) applies the rules above:
 
