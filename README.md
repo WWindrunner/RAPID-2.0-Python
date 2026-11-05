@@ -100,19 +100,6 @@ Important optional inputs also include `--ice_mask_path` for a binary
 snow/ice mask and `--desert_mask_path` for a binary desert/dark-area mask. In
 both masks, a value of 1 marks pixels to exclude.
 
-`--coh_path` (optional) gives an InSAR coherence raster, for example the
-3-band output of `S1_download/coh_loss.py` (band 1 baseline, 2 event, 3 loss;
-`--coh_band`, default 2, selects the event coherence). It is warped to the
-Cat_init grid. Initial-water objects (Cat_init VV or VH > 0, 8-connected over
-the scene) whose median event coherence is below `--thCohSkip` (default 0.5)
-skip the morphological rules: seed categories, growth thresholds, the
-low-credible cap, and the size and compactness limits. Such pixels are kept as
-at least class 5. The ice, desert and LIA masks and the built-up rule still
-apply. The object map is written to `Morph/lowcoh_objects.tif`. Without
-`--coh_path` the morphology is unchanged. Tested on one scene so far
-(S1B_IW_GRDH_1SDV_20170912T112516_20170912T112547_007358_00CFBD_95CE, Irma):
-+335 km2 of water, mostly class 5 on flooded fields.
-
 For HPC runs, temporary data can be directed to scratch storage with
 `--scratch_dir`, for example `--scratch_dir "$SLURM_TMPDIR"`.
 
