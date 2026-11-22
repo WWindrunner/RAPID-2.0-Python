@@ -64,7 +64,16 @@ terrain/mountain-shadow exclusion mask (`1` where LIA is greater than 50
 degrees).
 
 Other required auxiliary data, including Water Occurrence and land-cover
-maps, are downloaded automatically.
+maps, are downloaded automatically. To use local copies instead (for example
+when remote reads fail on an HPC), set any of these environment variables;
+unset, the downloads are unchanged:
+
+- `RAPID_GSW_DIR`: folder with the JRC GSW tiles `occurrence_<lon>_<lat>v1_4_2021.tif`.
+- `RAPID_WORLDCOVER_DIR`: folder with `ESA_WorldCover_10m_*_<tile>_Map.tif`
+  on the 3-degree grid. Tiles missing locally are read from the ESA 2021 v200
+  bucket; tiles that do not exist there either (open ocean) are skipped.
+- `RAPID_OCEAN_SHP`: ocean polygon shapefile used instead of the Natural Earth
+  download.
 
 ## Usage
 
@@ -102,6 +111,12 @@ both masks, a value of 1 marks pixels to exclude.
 
 For HPC runs, temporary data can be directed to scratch storage with
 `--scratch_dir`, for example `--scratch_dir "$SLURM_TMPDIR"`.
+
+`--resume_morph` defaults to `True`: when `Cat_init` and `ThFine` outputs
+already exist in the output folder, binary classification is skipped and only
+the morphology stage runs. Pass `--resume_morph False` to rerun from the
+start. `--blockSizeMorph` (default 3000) sets the block size for both
+`morph_pre` and the final morphology; `--morphPreBlockSize` is an alias.
 
 ### JSON configuration
 
@@ -236,18 +251,23 @@ for exclusion.
 Set `DESERT_MASK_VRT` to the fixed global desert-mask input when masks are
 generated. RAPID intersects the clipped desert mask with ESA WorldCover class
 60 (bare/sparse vegetation), uses only that effective mask for exclusion, and
-saves the four aligned uint8 products under each result scene:
+saves the four aligned uint8 masks, plus the land-cover and water-occurrence
+layers used by morphology (for checking detections), under each result scene:
 
 ```text
 <OUTPUT_ROOT>/<S1_PRODUCT>/masks/
 ├── <S1_PRODUCT>_ice.tif
 ├── <S1_PRODUCT>_cloud.tif
 ├── <S1_PRODUCT>_LIA.tif
-└── <S1_PRODUCT>_desert.tif
+├── <S1_PRODUCT>_desert.tif
+├── <S1_PRODUCT>_LCC.tif
+└── <S1_PRODUCT>_occurrence.tif
 ```
 
-Values are `0` (false), `1` (true), and `255` (nodata). The saved desert mask
-is the effective WorldCover intersection, not the full input desert layer.
+Mask values are `0` (false), `1` (true), and `255` (nodata). `_LCC.tif` holds
+ESA WorldCover class codes and `_occurrence.tif` the JRC water occurrence
+(0-100), both with `255` as nodata. The saved desert mask is the effective
+WorldCover intersection, not the full input desert layer.
 Generated normalized Gamma0 and pre-RAPID masks are kept under
 `<OUTPUT_ROOT>/<S1_PRODUCT>/preprocessing/`, or the configured
 `<PREPROCESS_ROOT>/<S1_PRODUCT>/`; user-provided input files are never

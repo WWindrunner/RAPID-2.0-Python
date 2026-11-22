@@ -332,7 +332,7 @@ def morph_pre_scene(scene_pack, blockSize=None):
     args_cross, ds_cross = pol_results["VH"]
 
     if blockSize is None:
-        blockSize = int(getattr(args_co, "morphPreBlockSize", 1000))
+        blockSize = int(getattr(args_co, "morphPreBlockSize", 3000))
 
     dirMorph = getattr(args_co, "dirMorph", os.path.join(args_co.dirOut, "Morph"))
     os.makedirs(dirMorph, exist_ok=True)
@@ -1391,45 +1391,35 @@ def morph_block_worker(
     thpp_high_a = _read_th_window(thsrc_vv, int(idx_vv[0]))
     thpp_high_b = _read_th_window(thsrc_vv, int(nCatPP + 1))
     thpp_high = np.maximum(thpp_high_a, thpp_high_b).astype(np.float32, copy=False)
-    # For LCC permanent-water rescue, retain whichever threshold is available.
-    thpp_rescue = np.fmax(thpp_high_a, thpp_high_b).astype(np.float32, copy=False)
     del thpp_high_a, thpp_high_b
 
     thqp_high_a = _read_th_window(thsrc_vh, int(idx_vh[0]))
     thqp_high_b = _read_th_window(thsrc_vh, int(nCatQP + 1))
     thqp_high = np.maximum(thqp_high_a, thqp_high_b).astype(np.float32, copy=False)
-    thqp_rescue = np.fmax(thqp_high_a, thqp_high_b).astype(np.float32, copy=False)
     del thqp_high_a, thqp_high_b
 
-    # Recover permanent-water seeds that were completely missed by the
-    # initial classification. Only a few reliable pixels are needed here;
-    # the existing permanent-water region growing below expands them within
-    # the LCC water mask. ESA WorldCover class 80 is permanent water.
-    valid_pp_rescue = (
-        np.isfinite(Ipp)
-        & np.isfinite(thpp_rescue)
-        & (Ipp < thpp_rescue)
-    )
-    valid_qp_rescue = (
-        np.isfinite(Iqp)
-        & np.isfinite(thqp_rescue)
-        & (Iqp < thqp_rescue)
-    )
-    maskPWRescue = (
-        (LCC == 80)
-        & (rasWB == 0)
-        & (~maskOut)
-        & (valid_pp_rescue | valid_qp_rescue)
-    )
-
-    if np.any(maskPWRescue):
-        rasWB[maskPWRescue] = 1
-        maskPWHighCred |= maskPWRescue
-        thppM[maskPWRescue] = thpp_rescue[maskPWRescue]
-        thqpM[maskPWRescue] = thqp_rescue[maskPWRescue]
-
-    del valid_pp_rescue, valid_qp_rescue, maskPWRescue
-    del thpp_rescue, thqp_rescue
+    # Recover permanent-water seeds missed by the initial classification.
+    # The local ThFine thresholds cannot be used here: the most water-like
+    # class band is nodata over most of the scene and the low-class band
+    # stores "no low class found" as 0, so fmax() of the two is 0 almost
+    # everywhere and nothing passes. Use the scene-level VV threshold
+    # thGlobal_1 (50th percentile of the bimodal thresholds) instead.
+    # One seed per LCC water body is enough: the PW step below re-tests the
+    # whole LCC component with the 90th percentile of its seeds' thppM.
+    if thGlobal_1 > 0:
+        maskPWRescue = (
+            maskPW
+            & (rasWB == 0)
+            & np.isfinite(Ipp)
+            & (Ipp < thGlobal_1)
+        )
+        if np.any(maskPWRescue):
+            rasWB[maskPWRescue] = 1
+            maskPWHighCred |= maskPWRescue
+            # Seeds need a positive threshold, otherwise extendTh gives the
+            # patch a threshold of 0 and wipes it. thqpM stays 0 (ignored).
+            thppM[maskPWRescue] = thGlobal_1
+        del maskPWRescue
 
     # ---- moderate-threshold layer ----
     thpp_mod = None
@@ -1489,11 +1479,11 @@ def morph_block_worker(
         #else:
         #    accept = (Ipp < thPWppBlock)
 
-        vv_strong = (
-            (rasWBCo == idx_vv[0]) |
-            ((len(idx_vv) >= 2) & (rasWBCo == idx_vv[1])) |
-            ((len(idx_vv) >= 2) & (rasWBCo == (nCatPP + 1)))
-        )
+        # "&" does not short-circuit, so guard idx_vv[1] explicitly for
+        # scenes with a single VV category.
+        vv_strong = (rasWBCo == idx_vv[0])
+        if len(idx_vv) >= 2:
+            vv_strong |= (rasWBCo == idx_vv[1]) | (rasWBCo == (nCatPP + 1))
 
         vh_strong = (
             (rasWBCross == idx_vh[0]) |
@@ -1991,7 +1981,7 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     isWindy = int(morph_pre.get("isWindy", 0))
 
     if blockSize is None:
-        blockSize = int(getattr(args_vv, "morphPreBlockSize", 1000))
+        blockSize = int(getattr(args_vv, "morphPreBlockSize", 3000))
 
     if batch_size is None:
         batch_size = int(getattr(args_vv, "morphBatchSize", 100))
@@ -2041,6 +2031,13 @@ def morph_proc_scene_main(scene_pack, blockSize=None, batch_size=None):
     else:
         thGlobal_db = np.full(3, np.nan, dtype=float)
         thGlobal = np.full(3, np.nan, dtype=float)
+
+    if np.isfinite(thGlobal[0]) and thGlobal[0] > 0:
+        print(f"[morph_proc_scene_main] LCC PW rescue threshold (VV thGlobal_1) = "
+              f"{thGlobal_db[0]:.2f} dB", flush=True)
+    else:
+        print("[morph_proc_scene_main] WARNING: no thGlobal_1 (no bimodal objects); "
+              "LCC PW rescue disabled for this scene", flush=True)
 
     WBClasses = np.asarray(getattr(args_vv, "WBClasses", [80]), dtype=int)
     EXClasses = np.asarray(getattr(args_vv, "EXClasses", []), dtype=int)

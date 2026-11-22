@@ -383,6 +383,9 @@ def Load_Data(args):
         (getattr(ds, "ice_mask", None), f"{args.granules}_ice.tif"),
         (ds.cloud_mask, f"{args.granules}_cloud.tif"),
         (ds.desert_mask, f"{args.granules}_desert.tif"),
+        # Ancillary layers used by morphology, saved for checking detections.
+        (ds.land_cover, f"{args.granules}_LCC.tif"),
+        (ds.water_occurrence, f"{args.granules}_occurrence.tif"),
     )
     for mask, filename in masks_to_save:
         if mask is not None:
