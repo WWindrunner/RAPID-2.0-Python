@@ -18,13 +18,14 @@ is unchanged; nothing here runs unless called.
 |---|---|
 | 0–5 | RAPID classes (0 non-water, 1 permanent water, 2–5 flood) |
 | 100 | determined ice: snow on the latest clear S2 view, 1–5 days back (1 = S1 day) |
-| 106–115 | less credible ice: 100 + days back (6–15) |
+| 106 | affirmative snow: flood pixel, snow possible, latest clear S2 view shows snow but is 6–15 days old |
+| 116 | plausible snow: flood pixel, snow possible, latest clear S2 view shows no snow but is 6–15 days old |
 | 200 | undetermined desert: SAR coherence cannot tell inundated from dry |
 | 250 | water under S2 cloud / cloud shadow for the whole window: snow undecidable |
 | 255 | no data |
 
 `<prefix>_mask_change.tif`: 0 unchanged; desert 1 kept flood, 2 → 0, 3 → 200;
-snow 4 → 100, 5 → 106–115, 6 → 250.
+snow 4 → 100, 5 → 106, 6 → 250, 7 → 116.
 
 ## Rules
 
@@ -40,11 +41,18 @@ Skip coherence when the scene has no desert-mask ∩ flood pixels.
 
 **Snow** (non-ocean water, classes 1–5, where snow is physically possible):
 
-| Snow mask | Result |
+Only a clear S2 view 1–5 days back is affirmative evidence.
+
+| Latest clear S2 view | Result |
 |---|---|
-| 1–5 | 100 |
-| 6–15 | 100 + days |
-| 200 (cloud only) | 250, but a desert 200 stays 200 |
+| snow, 1–5 days back | 100 |
+| no snow, 1–5 days back | flood label kept |
+| snow, 6–15 days back | 106 affirmative snow (flood pixels only) |
+| no snow, 6–15 days back | 116 plausible snow (flood pixels only; needs band 2 of `snow_latest_clear.py`) |
+| none, cloud only (200) | 250, but a desert 200 stays 200 |
+
+106 and 116 need `--snow-possible`: they go only where GFS / ERA5 + DEM say snow or ice
+is possible.
 
 Ocean (Natural Earth 10m polygons, rasterized on the RAPID grid) is never changed.
 

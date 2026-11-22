@@ -15,10 +15,15 @@ decided by S1 coherence alone (coh_loss.py output: baseline, event, loss):
     event > TH_LOW                  -> 0
     event <= TH_LOW, loss >= TH_D   -> flood class kept
     otherwise, incl. no coherence   -> 200 undetermined
-Snow (snow_latest_clear.py output), decided by S2 alone and applied to permanent
-water and to flood pixels the desert step did not set to 0:
-    1-5   -> 100        (snow on a clear S2 view up to 4 days before S1)
-    6-15  -> 100 + age  (106-115, less credible)
+Snow (snow_latest_clear.py output: band 1 snow / age, band 2 age of the latest clear
+view), decided by S2. Only a clear S2 view 1-5 days back (1 = S1 day) is affirmative:
+    snow on it                -> 100   (permanent water and flood)
+    no snow on it             -> flood label kept
+Older or missing evidence, on flood pixels only (classes 2-5 the desert step did not set
+to 0) and only where --snow-possible says snow or ice is possible (GFS / ERA5 + DEM):
+    snow, view 6-15 days old  -> 106   (affirmative snow: snow seen, view may be outdated)
+    no snow, view 6-15 old    -> 116   (plausible snow: no snow seen, snow may have fallen since)
+And on permanent water and flood:
     200   -> 250        (every S2 view in the window was cloud / cloud shadow)
 Ocean (Natural Earth 10m, as in RAPID's getOceanMask) is not water here: the snow
 step never touches it. With --snow-possible (snow_possible.py output: 2 m
@@ -40,6 +45,7 @@ TH_LOW, TH_D = 0.5, 0.25
 FLOOD = (2, 3, 4, 5)
 PERMANENT = 1
 UNDETERMINED, ICE, ICE_RECENT_DAYS, SNOW_CLOUD = 200, 100, 5, 250
+EARLY_SNOW, EARLY_CLEAR, WINDOW = 106, 116, 15
 OCEAN_URL = "https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_ocean.zip"
 OCEAN_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "rapid", "ne_10m_ocean")
 WC_URL = ("/vsicurl/https://esa-worldcover.s3.eu-central-1.amazonaws.com/"
@@ -169,6 +175,10 @@ if args.snow_possible:
 if args.snow:
     with rasterio.open(args.snow) as src:
         snow = src.read(1)
+        age = src.read(2) if src.count >= 2 else None
+    if age is None:
+        print("WARNING: snow file has no age band (older snow_latest_clear.py): "
+              "116 too-early clearance cannot be set; rerun snow_latest_clear.py")
     sea = ocean()
     print(f"ocean px (left alone): {sea.sum()}")
     flood &= ~sea
@@ -176,23 +186,28 @@ if args.snow:
     if possible is not None:
         water &= possible
     recent = water & (snow >= 1) & (snow <= ICE_RECENT_DAYS)
-    older = water & (snow > ICE_RECENT_DAYS) & (snow <= 15)
     cloud = water & (snow == 200) & (out != UNDETERMINED)  # desert 200 wins over 250
+    # 106 / 116 only on flood where snow or ice is physically possible
+    fl = flood & possible if possible is not None else np.zeros_like(flood)
+    if possible is None:
+        print("no --snow-possible: 106 / 116 not set")
+    early_snow = fl & (snow > ICE_RECENT_DAYS) & (snow <= WINDOW)
+    early_clear = (fl & (snow == 0) & (age > ICE_RECENT_DAYS) & (age <= WINDOW)
+                   if age is not None else np.zeros_like(flood))
     out[recent] = ICE
-    out[older] = ICE + snow[older]
+    out[early_snow] = EARLY_SNOW
+    out[early_clear] = EARLY_CLEAR
     out[cloud] = SNOW_CLOUD
-    change[recent], change[older], change[cloud] = 4, 5, 6
-    print(f"snow: -> 100: {recent.sum()}, -> 106-115: {older.sum()}, -> 250: {cloud.sum()}")
-    for d in range(ICE_RECENT_DAYS + 1, 16):
-        if (k := (older & (snow == d)).sum()):
-            print(f"  -> {ICE + d}: {k}")
+    change[recent], change[early_snow], change[cloud], change[early_clear] = 4, 5, 6, 7
+    print(f"snow: -> 100: {recent.sum()}, -> 106: {early_snow.sum()}, "
+          f"-> 116: {early_clear.sum()}, -> 250: {cloud.sum()}")
 
 change[res == 255] = 255
 profile.update(compress="deflate", tiled=True, blockxsize=256, blockysize=256)
 with rasterio.open(f"{args.prefix}_Morph_masked.tif", "w", **profile) as dst:
     dst.write(out, 1)
 with rasterio.open(f"{args.prefix}_mask_change.tif", "w", **profile) as dst:
-    # 0 unchanged; desert: 1 kept flood, 2 -> 0, 3 -> 200; snow: 4 -> 100, 5 -> 106-115, 6 -> 250
+    # 0 unchanged; desert: 1 kept flood, 2 -> 0, 3 -> 200; snow: 4 -> 100, 5 -> 106, 6 -> 250, 7 -> 116
     dst.write(change, 1)
 u, c = np.unique(out, return_counts=True)
 print("output classes:", dict(zip(u.tolist(), c.tolist())))
