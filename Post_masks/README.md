@@ -25,7 +25,8 @@ is unchanged; nothing here runs unless called.
 | 255 | no data |
 
 `<prefix>_mask_change.tif`: 0 unchanged; desert 1 kept flood, 2 → 0, 3 → 200;
-snow 4 → 100, 5 → 106, 6 → 250, 7 → 116.
+snow 4 → 100, 5 → 106, 6 → 250, 7 → 116; coherent patch 8 → 0; compactness after the
+coherent-patch rule 9 → 0.
 
 ## Rules
 
@@ -55,6 +56,32 @@ Only a clear S2 view 1–5 days back is affirmative evidence.
 is possible.
 
 Ocean (Natural Earth 10m polygons, rasterized on the RAPID grid) is never changed.
+
+**Coherent patches** (after snow; runs whenever `--coh` is given, i.e. only where
+coherence was already fetched for the desert step; `--no-coh-patch` turns it off).
+Pixels of flood classes 2–5 are grouped into 8-connected patches; desert-undetermined
+200, snow / ice / cloud labels (100, 106, 116, 250), permanent water and non-water split
+patches and are never changed. High event coherence means the surface did not change
+between pre1 and the event, so the patch is not new water. The rule only deletes and is
+strict:
+
+| Condition (all required) | Default option |
+|---|---|
+| 25th percentile of the patch's event coherence (pre1, co) > 0.75 | `--coh-patch-th 0.75`, `--coh-patch-pct 25` |
+| coherence on at least half of the patch's pixels | `--coh-patch-min-cover 0.5` |
+| patch at least 0.1 km² (coherence is coarser than the 20 m RAPID grid) | `--coh-patch-min-km2 0.1` |
+| → patch set to 0 (change code 7); otherwise unchanged | `--coh-patch-classes 2,3,4,5` |
+
+Patches without enough coherence are kept. The 25th percentile > 0.75 with ≥ 0.1 km²
+follows earlier tests (much less deletion of VV-dark, likely real water than median >
+0.5); 0.75 fits HyP3 burst coherence (5x1 looks) only.
+
+**Compactness after the coherent-patch rule** (runs right after it; `--no-post-compactness`
+turns it off). Deleting patches leaves small fragments, so water is re-checked as whole
+objects: 8-connected water of classes 1–5 together, judged with the threshold of its most
+reliable class (`--post-compactness 0,1.2,1.6,2.0,2.4`, as RAPID morph). Score = area /
+4-connected boundary pixels, as in RAPID morph. Objects containing class 1 are kept; a
+failing object loses only its class 2–5 pixels (change code 8).
 
 ## Testing status
 

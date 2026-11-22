@@ -91,6 +91,8 @@ def _vh_diagnostics(co, cross, ocean, lcc, idx_cross, n_classes):
     for label in range(1, n_classes + 2):
         counts[f"class_{label}_extra"] = int(np.count_nonzero(extra & (cross == label)))
         counts[f"class_{label}_both"] = int(np.count_nonzero(vv & (cross == label)))
+    if lcc is None:  # windy decision only needs the VV/VH counts above
+        return counts
     for label in np.unique(lcc[extra & np.isfinite(lcc)]):
         mask = extra & (lcc == label)
         counts[f"lcc_{label:g}_extra"] = int(np.count_nonzero(mask))
@@ -275,15 +277,14 @@ def morph_pre_block_worker(
 
     # Original decision counts above retain their overlapping-window semantics.
     # Diagnostics count each pixel once using the processing core.
-    diagnostics = {}
-    if lcc_block is not None:
-        rs = iR * diagnostic_core_size - r0Load
-        cs = iC * diagnostic_core_size - c0Load
-        core = (slice(rs, rs + diagnostic_core_size), slice(cs, cs + diagnostic_core_size))
-        diagnostics = _vh_diagnostics(
-            rasWBCo[core], rasWBCross[core], isOcean[core],
-            np.asarray(lcc_block)[core], idx_cross, nClasses_cross,
-        )
+    # Unique-core VV/VH counts (needed by the windy rule); land cover only when debugging.
+    rs = iR * diagnostic_core_size - r0Load
+    cs = iC * diagnostic_core_size - c0Load
+    core = (slice(rs, rs + diagnostic_core_size), slice(cs, cs + diagnostic_core_size))
+    diagnostics = _vh_diagnostics(
+        rasWBCo[core], rasWBCross[core], isOcean[core],
+        None if lcc_block is None else np.asarray(lcc_block)[core], idx_cross, nClasses_cross,
+    )
 
     thBimodal, objID, th = patchBimodal(
         maskSeeds=maskSeeds,
@@ -534,26 +535,50 @@ def morph_pre_scene(scene_pack, blockSize=None):
         else 0.0
     )
 
-    windyHighRatioMin = 0.15
+    windyHighRatioMin = 0.14
     windyHighRatioMax = 0.43
-    windyDetectAreaMax = 0.06
+    windyDetectAreaMax = 0.108
+    # Extended band: 0.43 < high_ratio <= 0.63 is windy only when VV sees at most 60 % of the
+    # VH detections (VH sees water that VV misses, as on wind-roughened water).
+    windyHighRatioMaxExt = 0.63
+    windyVVOverlapMax = 0.60
+    # Veto: VH-only water at least 0.9 x the VV water (with high_ratio >= 0.2) is taken as
+    # vegetation / land rather than wind.
+    windyVetoHighMin = 0.2
+    windyVetoExtraOverVV = 0.9
 
     vh_expanded_high_ratio = (
         VHDetectedExpandedHigh / VHDetected if VHDetected > 0 else 0.0
     )
 
+    # Unique-core counts (non-overlapping block cores, finite paired labels).
+    core_counts = {}
+    for res in results:
+        for key in ("vv", "vh", "both", "extra"):
+            core_counts[key] = core_counts.get(key, 0) + int(res["diagnostics"].get(key, 0))
+    vv_overlap = core_counts["both"] / core_counts["vh"] if core_counts["vh"] > 0 else 1.0
+    extra_over_vv = core_counts["extra"] / core_counts["vv"] if core_counts["vv"] > 0 else 0.0
+
+    in_band = (vh_high_ratio <= windyHighRatioMax) or (
+        vh_high_ratio <= windyHighRatioMaxExt and vv_overlap <= windyVVOverlapMax
+    )
+    vetoed = (vh_high_ratio >= windyVetoHighMin) and (extra_over_vv >= windyVetoExtraOverVV)
     isWindy = int(
         (vh_expanded_high_ratio >= windyHighRatioMin)
-        and (vh_high_ratio <= windyHighRatioMax)
         and (vh_detect_area_ratio <= windyDetectAreaMax)
+        and in_band
+        and not vetoed
     )
 
     print(
         f"Windy thresholds: "
-        f"expanded_high_ratio>={windyHighRatioMin:.2f}, "
-        f"high_ratio<={windyHighRatioMax:.2f}, "
-        f"detect_area<={windyDetectAreaMax:.2f}"
+        f"expanded_high_ratio>={windyHighRatioMin:.3f}, "
+        f"high_ratio<={windyHighRatioMax:.3f}, "
+        f"detect_area<={windyDetectAreaMax:.3f}"
     )
+    print(f"Windy stats: expanded_high_ratio={vh_expanded_high_ratio:.4f}, high_ratio={vh_high_ratio:.4f}, "
+          f"detect_area={vh_detect_area_ratio:.4f}, vv_overlap={vv_overlap:.4f}, extra_over_vv={extra_over_vv:.4f}, "
+          f"in_band={in_band}, vetoed={vetoed}")
     print(f"Windy case: {isWindy}")
     if MORPH_DEBUG_VH:
         print("[VH enable] Decision statistics (overlapping read windows):")
@@ -1775,74 +1800,49 @@ def morph_block_worker(
     if DEBUG_SAVE:
         print("Post-exclusion compactness statistics by final class:")
 
-    for credibility in range(1, nCred + 1):
-        class_mask = (rasWB == credibility)
-        if not np.any(class_mask):
-            if DEBUG_SAVE:
-                print(f"  credibility={credibility}: no patches")
-            continue
-
-        labels, n_objects = ndimage.label(class_mask, structure=cleanup_structure)
+    # Whole-object size / compactness: one object = 8-connected water of any class 1..nCred.
+    # It is judged with the thresholds of its most reliable (lowest) class, so a thin rim of a
+    # lower-credibility class attached to a larger object is never removed on its own, and
+    # objects containing class 1 are always kept (as before for class 1).
+    water_mask = np.isfinite(rasWB) & (rasWB >= 1) & (rasWB <= nCred)
+    labels, n_objects = ndimage.label(water_mask, structure=cleanup_structure)
+    if n_objects > 0:
         object_ids = np.arange(1, n_objects + 1, dtype=np.int32)
         area_counts = np.bincount(labels.ravel(), minlength=n_objects + 1).astype(float)
-
-        # Class 1 is grown only inside the LCC permanent-water mask. Keep even
-        # one-pixel fragments when they survive the SAR and exclusion checks.
-        remove_small = (
-            np.zeros(object_ids.shape, dtype=bool)
-            if credibility == 1
-            else area_counts[object_ids] < thSize_arr[credibility - 1]
-        )
-        compact_threshold = thCompactness_arr[credibility - 1]
+        lab_w = labels[water_mask]
+        cls_w = rasWB[water_mask].astype(np.int32)
+        min_class = np.full(n_objects + 1, nCred + 1, dtype=np.int32)
+        for credibility in range(nCred, 0, -1):
+            present = np.bincount(lab_w[cls_w == credibility], minlength=n_objects + 1) > 0
+            min_class[present] = credibility
+        del lab_w, cls_w
+        mc = min_class[object_ids]
+        size_th = thSize_arr[mc - 1]
+        comp_th = thCompactness_arr[mc - 1]
+        remove_small = (mc != 1) & (area_counts[object_ids] < size_th)
         compact_scores = np.full(n_objects + 1, np.nan, dtype=float)
-
-        # Class 1 normally has a zero compactness threshold. Avoid all
-        # boundary scans unless compactness can remove an object or debugging
-        # explicitly needs the statistics.
-        if compact_threshold > 0 or DEBUG_SAVE:
+        if np.any(comp_th > 0) or DEBUG_SAVE:
             is_boundary = identifyBoundaryMulti(labels, connectivity=4)
             boundary_ids = labels[is_boundary]
             boundary_counts = np.bincount(
                 boundary_ids[boundary_ids > 0], minlength=n_objects + 1
             ).astype(float)
-            valid_perimeter = boundary_counts[object_ids] > 0
-            valid_ids = object_ids[valid_perimeter]
-            compact_scores[valid_ids] = (
-                area_counts[valid_ids] / boundary_counts[valid_ids]
-            )
-            del is_boundary, boundary_ids, boundary_counts
-            del valid_perimeter, valid_ids
-
-        remove_void = compact_scores[object_ids] < compact_threshold
+            ok = boundary_counts > 0
+            compact_scores[ok] = area_counts[ok] / boundary_counts[ok]
+            del is_boundary, boundary_ids, boundary_counts, ok
+        remove_void = (mc != 1) & (compact_scores[object_ids] < comp_th)
         remove_ids = object_ids[remove_small | remove_void]
-
         if remove_ids.size > 0:
             remove_lut = np.zeros(n_objects + 1, dtype=bool)
             remove_lut[remove_ids] = True
             rasWB[remove_lut[labels]] = 0
             del remove_lut
-
         if DEBUG_SAVE:
-            finite_scores = compact_scores[object_ids]
-            finite_scores = finite_scores[np.isfinite(finite_scores)]
-            msg = (
-                f"  credibility={credibility}: n={n_objects}, "
-                f"removed={remove_ids.size}, "
-                f"area_min={np.min(area_counts[object_ids]):.1f}, "
-                f"area_max={np.max(area_counts[object_ids]):.1f}"
-            )
-            if finite_scores.size > 0:
-                msg += (
-                    f", compact_min={np.min(finite_scores):.4f}, "
-                    f"compact_max={np.max(finite_scores):.4f}, "
-                    f"compact_mean={np.mean(finite_scores):.4f}, "
-                    f"compact_median={np.median(finite_scores):.4f}"
-                )
-            print(msg)
-
-        del class_mask, labels, object_ids, area_counts
-        del compact_scores, compact_threshold
-        del remove_small, remove_void, remove_ids
+            print(f"  whole objects: n={n_objects}, removed={remove_ids.size} "
+                  f"(size {int(remove_small.sum())}, compactness {int(remove_void.sum())})")
+        del object_ids, area_counts, min_class, mc, size_th, comp_th
+        del compact_scores, remove_small, remove_void, remove_ids
+    del water_mask, labels
 
     _save_debug(rasWB, "10_after_size_compactness")
     rasWB[maskOut | (Ipp <= 0)] = np.nan
