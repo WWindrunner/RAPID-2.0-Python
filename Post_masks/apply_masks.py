@@ -1,5 +1,5 @@
-"""Relabel RAPID flood pixels with the desert (S1 coherence) and snow (S2) masks,
-then remove coherent flood patches (S1 coherence).
+"""Relabel RAPID flood pixels with the desert mask (S1 coherence), remove coherent flood
+patches (S1 coherence), then label snow (S2) on the water that is left.
 
   python apply_masks.py <Morph_final.tif> <out_prefix> [--desert MASK|wc60 --coh COH.tif]
                         [--snow SNOW.tif] [--snow-possible POSSIBLE.tif]
@@ -23,8 +23,8 @@ Snow (snow_latest_clear.py output: band 1 snow / age, band 2 age of the latest c
 view), decided by S2. Only a clear S2 view 1-5 days back (1 = S1 day) is affirmative:
     snow on it                -> 100   (permanent water and flood)
     no snow on it             -> flood label kept
-Older or missing evidence, on flood pixels only (classes 2-5 the desert step did not set
-to 0) and only where --snow-possible says snow or ice is possible (GFS / ERA5 + DEM):
+Older or missing evidence, on permanent water and flood (classes 1-5 left by the desert and
+coherence steps) and only where --snow-possible says snow or ice is possible (GFS / ERA5 + DEM):
     snow, view 6-15 days old  -> 106   (affirmative snow: snow seen, view may be outdated)
     no snow, view 6-15 old    -> 116   (plausible snow: no snow seen, snow may have fallen since)
 And on permanent water and flood:
@@ -34,13 +34,14 @@ step never touches it. With --snow-possible (snow_possible.py output: 2 m
 temperature on the DEM, model snow depth and lake / sea ice at the S1 time),
 snow labels go only where snow or ice is physically possible; a scene where it is possible
 nowhere needs no S2 snow mask at all (--snow may then be left out).
-Coherent patches (after snow; whenever --coh is given, unless --no-coh-patch): pixels
+Coherent patches (right after desert, BEFORE snow; whenever --coh is given, unless --no-coh-patch):
+coherence decides first, so a patch it removes never gets a snow label. Pixels
 of --coh-patch-classes (default flood 2-5; desert-undetermined 200 is not removed) are grouped into
-8-connected patches; snow / ice / cloud labels (100, 106, 116, 250), permanent water and
-non-water separate patches and are never changed. A patch is set to 0 (dry) only if
+8-connected patches; permanent water and non-water separate patches and are never changed. A patch is set to 0 (dry) only if
     percentile --coh-patch-pct (default 25) of its event coherence > --coh-patch-th (default 0.75)
     AND at least --coh-patch-min-cover of its pixels have coherence
     AND its area >= --coh-patch-min-km2 (default 0.1; coherence is coarser than the RAPID grid).
+Then the whole-object compactness check (classes 2-5), then snow on the flood that is left.
 Patches without enough coherence are kept. Strict by design: it only deletes.
 """
 import argparse
@@ -200,46 +201,6 @@ if args.desert:
     flood &= ~dry
     del desert, event, loss, cand, has, dry, keep, undet
 
-possible = None
-if args.snow_possible:
-    with rasterio.open(args.snow_possible) as src:
-        possible = src.read(1) == 1
-    print(f"snow possible px: {possible.sum()}")
-    if not possible.any():
-        print("snow impossible everywhere: snow step skipped")
-        args.snow = None
-
-if args.snow:
-    with rasterio.open(args.snow) as src:
-        snow = src.read(1)
-        age = src.read(2) if src.count >= 2 else None
-    if age is None:
-        print("WARNING: snow file has no age band (older snow_latest_clear.py): "
-              "116 too-early clearance cannot be set; rerun snow_latest_clear.py")
-    sea = ocean()
-    print(f"ocean px (left alone): {sea.sum()}")
-    flood &= ~sea
-    water = flood | ((res == PERMANENT) & ~sea)
-    if possible is not None:
-        water &= possible
-    recent = water & (snow >= 1) & (snow <= ICE_RECENT_DAYS)
-    cloud = water & (snow == 200) & (out != UNDETERMINED)  # desert 200 wins over 250
-    # 106 / 116 only on flood where snow or ice is physically possible
-    fl = flood & possible if possible is not None else np.zeros_like(flood)
-    if possible is None:
-        print("no --snow-possible: 106 / 116 not set")
-    early_snow = fl & (snow > ICE_RECENT_DAYS) & (snow <= WINDOW)
-    early_clear = (fl & (snow == 0) & (age > ICE_RECENT_DAYS) & (age <= WINDOW)
-                   if age is not None else np.zeros_like(flood))
-    out[recent] = ICE
-    out[early_snow] = EARLY_SNOW
-    out[early_clear] = EARLY_CLEAR
-    out[cloud] = SNOW_CLOUD
-    change[recent], change[early_snow], change[cloud], change[early_clear] = 4, 5, 6, 7
-    print(f"snow: -> 100: {recent.sum()}, -> 106: {early_snow.sum()}, "
-          f"-> 116: {early_clear.sum()}, -> 250: {cloud.sum()}")
-
-
 def patch_area_km2(labels, n_patches):
     """Area of every labelled patch, from the pixel size (geographic CRS: per row)."""
     t = profile["transform"]
@@ -260,7 +221,7 @@ if args.coh and not args.no_coh_patch:
     from scipy import ndimage
     with rasterio.open(args.coh) as src:
         event = src.read(2)
-    cand = np.isin(out, COH_PATCH_CLASSES)  # after desert and snow: snow labels split patches
+    cand = np.isin(out, COH_PATCH_CLASSES)  # after desert, before snow: coherence decides first
     labels, n_patches = ndimage.label(cand, structure=np.ones((3, 3), bool))
     del cand
     size = np.bincount(labels.ravel(), minlength=n_patches + 1)
@@ -337,6 +298,48 @@ if args.coh and not args.no_coh_patch:
             out[dropped] = 0
             change[dropped] = 9
             del dropped, drop, score, th, perim, min_class, area_px
+    flood &= np.isin(out, FLOOD)  # snow only sees flood the coherence steps kept
+
+
+possible = None
+if args.snow_possible:
+    with rasterio.open(args.snow_possible) as src:
+        possible = src.read(1) == 1
+    print(f"snow possible px: {possible.sum()}")
+    if not possible.any():
+        print("snow impossible everywhere: snow step skipped")
+        args.snow = None
+
+if args.snow:
+    with rasterio.open(args.snow) as src:
+        snow = src.read(1)
+        age = src.read(2) if src.count >= 2 else None
+    if age is None:
+        print("WARNING: snow file has no age band (older snow_latest_clear.py): "
+              "116 too-early clearance cannot be set; rerun snow_latest_clear.py")
+    sea = ocean()
+    print(f"ocean px (left alone): {sea.sum()}")
+    flood &= ~sea & np.isin(out, FLOOD)  # desert 200 and removed patches are not snow candidates
+    water = flood | ((res == PERMANENT) & ~sea)
+    if possible is not None:
+        water &= possible
+    recent = water & (snow >= 1) & (snow <= ICE_RECENT_DAYS)
+    cloud = water & (snow == 200) & (out != UNDETERMINED)  # desert 200 wins over 250
+    # 106 / 116 on permanent water and flood, only where snow or ice is physically possible
+    fl = water if possible is not None else np.zeros_like(flood)
+    if possible is None:
+        print("no --snow-possible: 106 / 116 not set")
+    early_snow = fl & (snow > ICE_RECENT_DAYS) & (snow <= WINDOW)
+    early_clear = (fl & (snow == 0) & (age > ICE_RECENT_DAYS) & (age <= WINDOW)
+                   if age is not None else np.zeros_like(flood))
+    out[recent] = ICE
+    out[early_snow] = EARLY_SNOW
+    out[early_clear] = EARLY_CLEAR
+    out[cloud] = SNOW_CLOUD
+    change[recent], change[early_snow], change[cloud], change[early_clear] = 4, 5, 6, 7
+    print(f"snow: -> 100: {recent.sum()}, -> 106: {early_snow.sum()}, "
+          f"-> 116: {early_clear.sum()}, -> 250: {cloud.sum()}")
+
 
 change[res == 255] = 255
 profile.update(compress="deflate", tiled=True, blockxsize=256, blockysize=256)
