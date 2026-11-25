@@ -278,7 +278,7 @@ overwritten or deleted.
 1. `TempPol_VV/Cat_init_VV.tif`: Result of classification of the VV polarization.
 2. `TempPol_VH/Cat_init_VH.tif`: Result of classification of the VH polarization.
 3. `Morph/Morph_final.tif`: Final result after the morphological process
-4. `quicklook.png` and `quicklook_map.png`: An overview of the final result with LCC map, Google Earth map, and the original SAR as reference.
+4. Quicklook: drawn at the end of the chain by `Post_masks/apply_masks.py --vv Gamma0_VV.tif` (or `python Quick_look.py <map.tif> <Gamma0_VV.tif> <out.png>`): `<prefix>_quicklook.png` with three panels: Gamma0 VV (dB) | VV + water (classes 1-5) | VV + all classes (snow/ice 100/106/116, desert 200 and cloud 250 each in one colour). RAPID.py itself no longer writes a quicklook.
 
 Optional snow and desert/beach revision of `Morph_final.tif` (S2 latest-clear snow mask, GFS/DEM snow gate, Sentinel-1 coherence for the desert mask): see [`Post_masks/README.md`](Post_masks/README.md).
 

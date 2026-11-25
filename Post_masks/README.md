@@ -28,6 +28,9 @@ is unchanged; nothing here runs unless called.
 snow 4 → 100, 5 → 106, 6 → 250, 7 → 116; coherent patch 8 → 0; compactness after the
 coherent-patch rule 9 → 0.
 
+`<prefix>_quicklook.png` (with `--vv Gamma0_VV.tif`): VV dB | VV + water 1-5 | VV + all classes
+(snow/ice, desert, cloud one colour each), drawn by `../Quick_look.py`.
+
 ## Rules
 
 **Desert** (flood classes 2–5 inside the desert mask; Sentinel-1 coherence only):

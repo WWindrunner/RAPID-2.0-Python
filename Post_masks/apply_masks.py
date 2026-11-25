@@ -5,7 +5,7 @@ patches (S1 coherence), then label snow (S2) on the water that is left.
                         [--snow SNOW.tif] [--snow-possible POSSIBLE.tif]
                         [--no-coh-patch] [--coh-patch-th 0.75] [--coh-patch-min-km2 0.1]
                         [--coh-patch-min-cover 0.5] [--coh-patch-pct 25]
-                        [--coh-patch-classes 2,3,4,5]
+                        [--coh-patch-classes 2,3,4,5] [--vv Gamma0_VV.tif]
 
 Desert changes flood pixels (classes 2-5) only; snow changes non-ocean water pixels
 (permanent water 1 and flood 2-5). The LIA/shadow exclusion is untouched.
@@ -96,6 +96,9 @@ parser.add_argument("--coh-patch-min-cover", type=float, default=0.5,
                          "pixels are removed (default 0.5)")
 parser.add_argument("--coh-patch-classes", default="2,3,4,5",
                     help="classes grouped into patches (default flood 2,3,4,5; 200 is never removed)")
+parser.add_argument("--vv", help="Gamma0 VV on the RAPID grid; with it, <prefix>_quicklook.png is drawn "
+                    "from the masked map at the end (Quick_look.py: VV | VV + water 1-5 | VV + all classes)")
+parser.add_argument("--quicklook-title", help="quicklook title (default: map file name)")
 args = parser.parse_args()
 assert args.desert or args.snow or args.snow_possible or args.coh, \
     "give --desert and/or --snow and/or --coh"
@@ -352,3 +355,15 @@ with rasterio.open(f"{args.prefix}_mask_change.tif", "w", **profile) as dst:
 u, c = np.unique(out, return_counts=True)
 print("output classes:", dict(zip(u.tolist(), c.tolist())))
 print(f"-> {args.prefix}_Morph_masked.tif, {args.prefix}_mask_change.tif")
+
+if args.vv:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from Quick_look import quicklook
+    try:
+        quicklook(f"{args.prefix}_Morph_masked.tif", args.vv, f"{args.prefix}_quicklook.png",
+                  title=args.quicklook_title)
+    except Exception as e:  # a failed PNG must not fail the masking
+        print(f"[quicklook] failed: {e}", flush=True)
+else:
+    print("[quicklook] skipped: no --vv given")

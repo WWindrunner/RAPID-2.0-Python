@@ -15,7 +15,6 @@ import dask
 import tempfile
 import shutil
 import traceback
-from Quick_look import *
 
 warnings.filterwarnings("ignore")
 
@@ -931,39 +930,7 @@ def RAPID(*args, **kwargs):
         stage = "Morph_proc_scene"
         with Timer('Morph_proc_scene'):
             scene_output = [Morph_proc_scene(scene_pack) for scene_pack in scene_output]
-
-        stage = "Quicklook"
-        with Timer('Quicklook'):
-            for scene_pack in scene_output:
-                args_scene = scene_pack["scene_args"]
-                ds_scene = scene_pack["scene_ds"]
-                morph = scene_pack["morph_proc"]
-            # print(morph)
-
-                fileMorphOut = morph.get("fileMorphOut")
-            # print(fileMorphOut)
-
-                if not fileMorphOut or (not os.path.exists(fileMorphOut)):
-                    print(f"[Quicklook] skip {args_scene.granules}: fileMorphOut not found", flush=True)
-                    continue
-
-                try:
-                    quicklook(
-                        fileMorphOut=fileMorphOut,
-                        ds=ds_scene,
-                        args=args_scene,
-                        out_png=os.path.join(args_scene.dirOut, "quicklook.png"),
-                        scene_name=args_scene.granules
-                    )
-                    quicklook_map(
-                        fileMorphOut=fileMorphOut,
-                        ds=ds_scene,
-                        args=args_scene,
-                        out_png=os.path.join(args_scene.dirOut, "quicklook_map.png"),
-                        scene_name=args_scene.granules
-                    )
-                except Exception as e:
-                    print(f"[Quicklook] failed for {args_scene.granules}: {e}", flush=True)
+        # Quicklook moved to the end of the chain: Post_masks/apply_masks.py --vv (Quick_look.py).
     except Exception as exc:
         # One scene per invocation: record failure and return normally so a
         # caller processing multiple scenes can proceed to its next input.
